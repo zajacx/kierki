@@ -4,7 +4,9 @@
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -51,7 +53,7 @@
 
 #define IAM_SIZE 6
 
-// ------------------------------- Declarations -------------------------------
+// ---------------------- Declarations & Data Structures ----------------------
 
 using Clock = std::chrono::steady_clock;
 using TimePoint = std::chrono::time_point<Clock>;
@@ -63,6 +65,100 @@ struct ClientInfo {
     TimePoint connection_time;
     int chosen_position;
 };
+
+struct Card {
+    std::string value;
+    char suit;
+
+    Card(std::string v, char s) : value(v), suit(s) {}
+};
+
+struct Hand {
+    std::vector<Card> cards;
+
+    void add_card(const Card& card) {
+        cards.push_back(card);
+    }
+};
+
+struct Round {
+    int round_type;
+    char starting_player;
+    Hand hands[4];
+
+    Round(int type, char starter) : round_type(type), starting_player(starter) {}
+};
+
+struct Game {
+    std::vector<Round> rounds;
+
+    void add_round(const Round& round) {
+        rounds.push_back(round);
+    }
+};
+
+// -------------------------- Functions for structs --------------------------
+
+// Card parser.
+Card parse_card(const std::string& hand_str, size_t& pos) {
+    std::string value;
+    char suit;
+
+    if (hand_str[pos] == '1' && hand_str[pos + 1] == '0') {
+        value = "10";
+        pos += 2;
+    } else {
+        value = hand_str[pos];
+        pos += 1;
+    }
+
+    if (pos < hand_str.size()) {
+        suit = hand_str[pos];
+        pos += 1;
+    } else {
+        throw std::invalid_argument("Invalid card format: incomplete suit");
+    }
+
+    return Card(value, suit);
+}
+
+// Hand parser.
+void parse_hand(const std::string& hand_str, Hand& hand) {
+    size_t pos = 0;
+    while (pos < hand_str.size()) {
+        Card card = parse_card(hand_str, pos);
+        hand.add_card(card);
+    }
+}
+
+// Game description parser.
+Game parse_game_file(const std::string& filename) {
+    std::ifstream file(filename);
+    if (!file.is_open()) {
+        throw std::runtime_error("Could not open file: " + filename);
+    }
+
+    Game game;
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.empty()) continue;
+
+        int round_type = line[0] - '0';
+        char starting_player = line[1];
+
+        Round round(round_type, starting_player);
+
+        for (int i = 0; i < 4; ++i) {
+            std::getline(file, line);
+            parse_hand(line, round.hands[i]);
+        }
+
+        game.add_round(round);
+    }
+
+    file.close();
+    return game;
+}
 
 // ------------------------------ Initialization ------------------------------
 
@@ -672,7 +768,7 @@ int main(int argc, char** argv) {
 
     // State:
     size_t active_clients = 0;
-
+/*
     try {
         parse_arguments(argc, argv, &port_s, &filename, &timeout);
         print_options_info(port_s, filename, timeout);
@@ -685,6 +781,29 @@ int main(int argc, char** argv) {
         std::cerr << "Error: " << e.what() << "\n";
         // close_server();
         return ERROR;
+    }
+*/
+
+    try {
+        parse_arguments(argc, argv, &port_s, &filename, &timeout);
+        print_options_info(port_s, filename, timeout);
+        Game game = parse_game_file(filename);
+
+        // Przykładowe wyświetlenie wczytanych danych
+        for (const auto& round : game.rounds) {
+            std::cout << "Round type: " << round.round_type << ", Starting player: " << round.starting_player << "\n";
+            const char players[] = {'N', 'E', 'S', 'W'};
+            for (int i = 0; i < 4; ++i) {
+                std::cout << "Player " << players[i] << " cards: ";
+                for (const auto& card : round.hands[i].cards) {
+                    std::cout << card.value << card.suit << " ";
+                }
+                std::cout << "\n";
+            }
+            std::cout << "--------------------------------\n";
+        }
+    } catch (const std::exception& ex) {
+        std::cerr << "Error: " << ex.what() << std::endl;
     }
 
     // close_server();
