@@ -36,7 +36,7 @@
 #define CONNECTIONS 4
 #define POLL_SIZE 5
 #define BUFFER_SIZE 100
-#define TIMEOUT 5000
+#define TIMEOUT 500
 
 #define DEFAULT_PORT 0
 
@@ -268,6 +268,22 @@ void clear_client_info(struct ClientInfo* clients, int i) {
     clients[i].chosen_position = 0;
 }
 
+// Initializes an array for the info about occupied places.
+void initialize_is_occupied(bool* is_place_occupied) {
+    for (int i = 0; i < POLL_SIZE; i++) {
+        is_place_occupied[i] = false;
+    }
+}
+
+// Writes true/false to an array that indicates occupation of places.
+// is_place_occupied = { _ _ _ _ _ }
+//                         N E S W
+void get_occupied_places(struct ClientInfo* clients, bool* is_place_occupied) {
+    for (int i = 1; i < POLL_SIZE; i++) {
+        int pos = clients[i].chosen_position;
+        is_place_occupied[pos] = (pos != 0) ? true : false;
+    }
+}
 
 // Gets client's IP address and assigned port number.
 void get_client_ip(int client_fd, uint16_t* port, std::string* ip_and_port) {
@@ -346,6 +362,16 @@ void accept_client(struct pollfd* poll_fds, struct ClientInfo* clients) {
     clients[id].chosen_position = 0;
 }
 
+// Disconnects client occupying i-th position in descriptors' array.
+void disconnect_client(struct pollfd* poll_fds, struct ClientInfo* clients,
+                       int* active_clients, int* ready, int i) {
+    close(poll_fds[i].fd);
+    (*active_clients)--;
+    if (clients[i].chosen_position != 0) (*ready)--;
+    clear_descriptor(poll_fds, i);
+    clear_client_info(clients, i);
+}
+
 // Checks poll status and throws an exception in case of an error.
 void check_poll_error(int poll_status) {
     if (poll_status < 0) {
@@ -359,33 +385,30 @@ void check_poll_error(int poll_status) {
 }
 
 // Calculate the remaining time for each client and set poll's timeout.
-void calculate_remaining_time(struct ClientInfo* clients, int timeout,
-                              struct pollfd* poll_fds, int* active_clients) {
-
+void calculate_remaining_time(struct pollfd* poll_fds, struct ClientInfo* clients, 
+                              int timeout, int* poll_timeout, int* active_clients, int* ready) {
+    int min_timeout = TIMEOUT;
     TimePoint now = Clock::now();
 
-    for (int i = 1; i <= CONNECTIONS; i++) {
+    for (int i = 1; i < POLL_SIZE; i++) {
+        
         if (poll_fds[i].fd != -1 && clients[i].chosen_position == 0) {
-
+            // Client hasn't sent IAM, so calculate time left:
             auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(now - clients[i].connection_time).count();
             int time_left = timeout - elapsed_time;
+            std::cout << "time left for client " << i << ": " << time_left << "\n";
 
             if (time_left <= 0) {
-                // siodmy raz to samo
-                close(poll_fds[i].fd);
-                clear_descriptor(poll_fds, i);
-                clear_client_info(clients, i);
-                (*active_clients)--;
+                disconnect_client(poll_fds, clients, active_clients, ready, i);
                 std::cerr << "Time exceeded: ending connection (id: " << i << ")\n";
             }
-            /*
-            // ewentualnie mozna sprobowac czy dziala ten ulepszony algorytm liczenia timeoutu
-            else if (time_left < *poll_timeout && time_left > 0) {
-                *poll_timeout = time_left;
+            else if (time_left > 0 && time_left < min_timeout) {
+                min_timeout = time_left;
             }
-            */
         }
     }
+
+    *poll_timeout = min_timeout;
 }
 
 // ------------------------------ Message parsers ------------------------------
@@ -452,9 +475,45 @@ Kolejny poll będzie przeprowadzać grę, wtedy zerowy deskryptor w tablicy będ
 olewania i ewentualnego czekania na podłączenie się nowego gracza.
 */
 
-/*
-TODO: zebrać zamykanie połączenia w jedną funkcję, przemyśleć obsługę 
-*/
+// TEST: Prints whole poll_fds array.
+void print_poll_fds(struct pollfd* poll_fds) {
+    std::cout << "POLL_FDS\n\t0\t1\t2\t3\t4\n";
+    std::cout << "fd:\t";
+    for (int i = 0; i < POLL_SIZE; i++) {
+        std::cout << poll_fds[i].fd << "\t";
+    }
+    std::cout << "\n";
+    std::cout << "ev:\t";
+    for (int i = 0; i < POLL_SIZE; i++) {
+        std::cout << poll_fds[i].events << "\t";
+    }
+    std::cout << "\n";
+    std::cout << "rev:\t";
+    for (int i = 0; i < POLL_SIZE; i++) {
+        std::cout << poll_fds[i].revents << "\t";
+    }
+    std::cout << "\n";
+}
+
+// TEST: Prints whole clients array.
+void print_clients(struct ClientInfo* clients) {
+    std::cout << "CLIENTS\n\t0\t1\t2\t3\t4\n";
+    std::cout << "fd:\t";
+    for (int i = 0; i < POLL_SIZE; i++) {
+        std::cout << clients[i].fd << "\t";
+    }
+    std::cout << "\n";
+    std::cout << "port:\t";
+    for (int i = 0; i < POLL_SIZE; i++) {
+        std::cout << clients[i].port << "\t";
+    }
+    std::cout << "\n";
+    std::cout << "pos:\t";
+    for (int i = 0; i < POLL_SIZE; i++) {
+        std::cout << clients[i].chosen_position << "\t";
+    }
+    std::cout << "\n";
+}
 
 // Create connections with all players.
 void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* ready_clients, 
@@ -462,13 +521,16 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
 
     struct pollfd poll_fds[POLL_SIZE];
     struct ClientInfo clients[POLL_SIZE];
+    bool is_place_occupied[POLL_SIZE];
 
     initialize_descriptors(poll_fds, socket_fd);
     initialize_clients_info(clients);
+    initialize_is_occupied(is_place_occupied);
 
     // After establishing all four connections, poll_fds and clients
     // will be rewritten to ready_poll_fds and ready_clients.
 
+    int poll_timeout = TIMEOUT;
     int active_clients = 0;
     int ready = 0;
 
@@ -479,7 +541,7 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
             poll_fds[i].revents = 0;
         }
 
-        int poll_status = poll(poll_fds, POLL_SIZE, TIMEOUT);
+        int poll_status = poll(poll_fds, POLL_SIZE, poll_timeout);
         check_poll_error(poll_status);
 
         /*
@@ -494,12 +556,9 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
             // New connection: new client is accepted.
             if (poll_fds[0].revents & POLLIN) {
                 if (active_clients < CONNECTIONS) {
-
                     accept_client(poll_fds, clients);
                     active_clients++;
-                    
                     std::cout << "Client " << active_clients << " accepted\n"; 
-
                 } else {
                     std::cerr << "Maximum clients reached, connection rejected\n";
                 }
@@ -517,20 +576,10 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
                     
                     // TODO: uprościć te ify
                     if (received_bytes < 0) {
-                        // zamykanie klienta: ta sama sekwencja krokow
-                        close(poll_fds[i].fd);
-                        active_clients--;
-                        if (clients[i].chosen_position != 0) ready--;
-                        clear_descriptor(poll_fds, i);
-                        clear_client_info(clients, i);
+                        disconnect_client(poll_fds, clients, &active_clients, &ready, i);
                         std::cerr << "readn failed: ending connection (id: " << i << ")\n";
                     } else if (received_bytes == 0) {
-                        // drugi raz to samo
-                        close(poll_fds[i].fd);
-                        active_clients--;
-                        if (clients[i].chosen_position != 0) ready--;
-                        clear_descriptor(poll_fds, i);
-                        clear_client_info(clients, i);
+                        disconnect_client(poll_fds, clients, &active_clients, &ready, i);
                         std::cerr << "empty readn: ending connection (id: " << i << ")\n";
                     } else {
                         std::cout << "received " << received_bytes << " bytes within connection (id: " << i << ")\n";
@@ -538,10 +587,18 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
                         char place;
                         if (iam_parser(buffer, &place) == 0) {
                             std::cout << "received IAM" << place << "\n";
-                            clients[i].chosen_position = map_place(place);
-                            ready++;
+                            get_occupied_places(clients, is_place_occupied);
+                            int p = map_place(place);
+                            if (!is_place_occupied[p]) {
+                                clients[i].chosen_position = p;
+                                ready++;
+                            } else {
+                                // tutaj wysyłamy BUSY<listazajetychmiejsc>
+                            }
+
+                            
                         } else {
-                            // trzeci raz to samo
+                            // czy to jest na pewno to samo?
                             close(poll_fds[i].fd);
                             active_clients--;
                             // if (clients[i].chosen_position != 0) ready--;
@@ -551,35 +608,19 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
                         }
                     }
                 }
-                
                 // POLLHUP <=> client disconnected.
                 else if (poll_fds[i].fd != -1 && (poll_fds[i].revents & POLLHUP)) {
-                    // czwarty raz to samo
-                    close(poll_fds[i].fd);
-                    active_clients--;
-                    if (clients[i].chosen_position != 0) ready--;
-                    clear_descriptor(poll_fds, i);
-                    clear_client_info(clients, i);
+                    disconnect_client(poll_fds, clients, &active_clients, &ready, i);
                     std::cerr << "client " << i << " disconnected - waiting to reconnect\n";
                 }
                 // POLLERR <=> client's error.
                 else if (poll_fds[i].fd != -1 && (poll_fds[i].revents & POLLERR)) {
-                    // piąty raz to samo
-                    close(poll_fds[i].fd);
-                    active_clients--;
-                    if (clients[i].chosen_position != 0) ready--;
-                    clear_descriptor(poll_fds, i);
-                    clear_client_info(clients, i);
+                    disconnect_client(poll_fds, clients, &active_clients, &ready, i);
                     std::cerr << "client " << i << " got an error - disconnected\n";
                 }
                 // POLLNVAL <=> wrong descriptor.
                 else if (poll_fds[i].fd != -1 && (poll_fds[i].revents & POLLNVAL)) {
-                    // szósty raz to samo
-                    close(poll_fds[i].fd);
-                    active_clients--;
-                    if (clients[i].chosen_position != 0) ready--;
-                    clear_descriptor(poll_fds, i);
-                    clear_client_info(clients, i);
+                    disconnect_client(poll_fds, clients, &active_clients, &ready, i);
                     std::cerr << "error in poll_fds array: descriptor " << i << "is wrong\n";
                 }
             }
@@ -588,13 +629,10 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
             std::cout << "timeout...\n";
         }
 
-        calculate_remaining_time(clients, timeout, poll_fds, &active_clients);
+        calculate_remaining_time(poll_fds, clients, timeout, &poll_timeout, &active_clients, &ready);
 
     } while (ready < CONNECTIONS);
 
-    std::cout << "Connections established, game is starting...\n";
-
-    std::cout << "Clients:\n";
     for (int i = 1; i <= CONNECTIONS; i++) {
         int p = clients[i].chosen_position;
         ready_poll_fds[p].fd = poll_fds[i].fd;
@@ -605,10 +643,10 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
         ready_clients[p].chosen_position = clients[i].chosen_position;
     }
 
-    for (int i = 1; i <= CONNECTIONS; i++) {
-        std::cout << "PLACE: " << i << "\n\tfd=" << ready_clients[i].fd << "\n\tip_and_port=" << ready_clients[i].ip_and_port << "\n\tchosen_pos=" << ready_clients[i].chosen_position << "\n";
-    }
+    print_poll_fds(poll_fds);
+    print_clients(clients);
 
+    std::cout << "Connections established, game is starting...\n";
 }
 
 // ---------------------------------- Main ----------------------------------
@@ -638,7 +676,6 @@ int main(int argc, char** argv) {
     try {
         parse_arguments(argc, argv, &port_s, &filename, &timeout);
         print_options_info(port_s, filename, timeout);
-        // install_signal_handler(SIGINT, catch_int, SA_RESTART);
         initialize_main_socket(&socket_fd, port_s, &port, &server_address, &ip_and_port);
         initialize_descriptors(poll_fds, socket_fd);
         initialize_clients_info(clients);

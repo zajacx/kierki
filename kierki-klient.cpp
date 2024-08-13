@@ -331,9 +331,12 @@ int main(int argc, char** argv) {
         connect_to_server(port_s, &port, host, ipv4, ipv6, &server_address,
                           &socket_fd, &connected, &family);
 
+        
         char buffer[] = "IAMN\r\n"; 
         buffer[3] = place;
         ssize_t written_bytes = write(socket_fd, buffer, 6);
+
+        // tutaj można odebrać albo BUSY albo DEAL
 
         while (true) {
 
