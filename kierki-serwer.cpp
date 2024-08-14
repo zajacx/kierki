@@ -37,8 +37,10 @@
 #define EMPTY_PORT 0
 #define CONNECTIONS 4
 #define POLL_SIZE 5
-#define BUFFER_SIZE 100
+#define BUFFER_SIZE 250
+#define READING_LIMIT 200 // has to be less than BUFFER_SIZE
 #define TIMEOUT 500
+
 
 #define DEFAULT_PORT 0
 
@@ -523,6 +525,80 @@ int map_place(char place) {
     return 0;
 }
 
+/*
+// Reads from given descriptor until it finds "\r\n" sequence.
+// Writes read sequence to an external buffer ext_buffer
+// Returns number of read bytes or -1 in case of error.
+int read_to_newline(int descriptor, char* ext_buffer) {
+    
+    char buf;
+    size_t p = 0;
+    ssize_t last_read_size;
+
+    memset(ext_buffer, 0, BUFFER_SIZE);
+
+    int count = 0;
+    while (count < READING_LIMIT) {
+        ssize_t read_byte = readn(descriptor, &buf, 1, &last_read_size);
+        if (read_byte < 0) {
+            return (int) read_byte;
+        } else if (read_byte == 0) {
+            break;
+        } else if (read_byte == 1) {
+            count++;
+            ext_buffer[p++] = buf;
+            // Check for message termination:
+            if (p >= 2 && ext_buffer[p] && 
+                ext_buffer[p - 1] == '\n' && 
+                ext_buffer[p - 2] == '\r')
+            {
+                ext_buffer[p] = '\0';
+                return count;
+            }
+        } else {
+            throw std::runtime_error("weird error in readn");
+        }
+
+    }
+
+    // Return number of read bytes:
+    return count;
+}
+*/
+
+// Reads from given descriptor until it finds "\r\n" sequence.
+// Writes read sequence to an external buffer ext_buffer
+// Returns number of read bytes or -1 in case of error.
+int read_to_newline(int descriptor, std::string* result) {
+    
+    char buf;
+    std::string buffer;
+    ssize_t last_read_size;
+
+    int count = 0;
+    while (count < READING_LIMIT) {
+        ssize_t read_byte = readn(descriptor, &buf, 1, &last_read_size);
+        if (read_byte < 0) {
+            return (int) read_byte;
+        } else if (read_byte == 0) {
+            break;
+        } else if (read_byte == 1) {
+            count++;
+            buffer += buf;
+            if (buffer.size() >= 2 && buffer.substr(buffer.size() - 2) == "\r\n") {
+                *result = buffer;
+                return count;
+            }
+        } else {
+            throw std::runtime_error("weird error in readn");
+        }
+    }
+
+        // Return number of read bytes:
+        return count;
+}
+
+
 int iam_parser(const std::string& message, char* result) {
     // Length:
     if (message.length() != 6) {
@@ -553,23 +629,7 @@ int iam_parser(const std::string& message, char* result) {
     return GOOD;
 }
 
-/*
-Pomysł:
-Tworzymy tablicę structów z danymi czasowymi kolejnych klientów i na bieżąco ją aktualizujemy.
-Między acceptem a ustaleniem połączenia pamiętamy wszystko w zmiennych lokalnych i czekamy
-na komunikat IAM. Jeśli on nie dotrze, nie musimy zmieniać żadnych złożonych struktur danych.
-
-Gdy klient w odpowiednim czasie prześle komunikat IAM, przepisujemy jego deskryptor i dane
-czasowe do nowych struktur. Gra będzie prowadzona na innym pollu, gdzie z każdym graczem będzie
-związana nazwa (można zrobić structa na nazwę <N/E/S/W>, deskryptor i dane czasowe). Następnie
-czekamy na wszystkich graczy. Obsługujemy też rozłączenia się klientów, jeśli to zrobią
-po przesłaniu IAM.
-
-Poniżej wersja robocza, wymaga dopracowania.
-Ten poll zajmuje się przyjmowaniem połączeń, ewentualny syf od przyłączonych klientów olewa.
-Kolejny poll będzie przeprowadzać grę, wtedy zerowy deskryptor w tablicy będzie tylko do
-olewania i ewentualnego czekania na podłączenie się nowego gracza.
-*/
+// -------------------------------- Test prints --------------------------------
 
 // TEST: Prints whole poll_fds array.
 void print_poll_fds(struct pollfd* poll_fds) {
@@ -611,6 +671,15 @@ void print_clients(struct ClientInfo* clients) {
     std::cout << "\n";
 }
 
+/**
+ * CONNECTION
+ * - struct pollfd* ready_poll_fds is a pointer to an array of sorted clients data
+ *   (according to their place choice) - filled by this function at the end.
+ * - struct ClientInfo* ready_clients is similar but for other data.
+ * - int timeout is a constant value given as an argument when starting the server.
+ * - int socket_fd is a descriptor of the server.
+ */
+
 // Create connections with all players.
 void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* ready_clients, 
                           int timeout, int socket_fd) {
@@ -630,8 +699,9 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
     int active_clients = 0;
     int ready = 0;
 
-    static char buffer[BUFFER_SIZE];
-    
+    //static char buffer[BUFFER_SIZE];
+    std::string buffer;
+
     do {
         for (int i = 0; i < POLL_SIZE; i++) {
             poll_fds[i].revents = 0;
@@ -666,11 +736,11 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
                 if (poll_fds[i].fd != -1 && (poll_fds[i].revents & POLLIN)) {
 
                     ssize_t last_read_size;
-                    memset(buffer, 0, BUFFER_SIZE);
+                    buffer = "";
                     
-                    ssize_t received_bytes = readn(poll_fds[i].fd, buffer, (size_t) IAM_SIZE, &last_read_size);
-                    
-                    // TODO: uprościć te ify
+                    // ssize_t received_bytes = readn(poll_fds[i].fd, buffer, IAM_SIZE, &last_read_size);
+                    int received_bytes = read_to_newline(poll_fds[i].fd, &buffer);
+
                     if (received_bytes < 0) {
                         disconnect_client(poll_fds, clients, &active_clients, &ready, i);
                         std::cerr << "readn failed: ending connection (id: " << i << ")\n";
@@ -739,8 +809,8 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
         ready_clients[p].chosen_position = clients[i].chosen_position;
     }
 
-    print_poll_fds(poll_fds);
-    print_clients(clients);
+    print_poll_fds(ready_poll_fds);
+    print_clients(ready_clients);
 
     std::cout << "Connections established, game is starting...\n";
 }
@@ -768,7 +838,7 @@ int main(int argc, char** argv) {
 
     // State:
     size_t active_clients = 0;
-/*
+
     try {
         parse_arguments(argc, argv, &port_s, &filename, &timeout);
         print_options_info(port_s, filename, timeout);
@@ -782,8 +852,9 @@ int main(int argc, char** argv) {
         // close_server();
         return ERROR;
     }
-*/
 
+    /*
+    TEST PARSERA PLIKU:
     try {
         parse_arguments(argc, argv, &port_s, &filename, &timeout);
         print_options_info(port_s, filename, timeout);
@@ -805,7 +876,7 @@ int main(int argc, char** argv) {
     } catch (const std::exception& ex) {
         std::cerr << "Error: " << ex.what() << std::endl;
     }
-
+    */
     // close_server();
     return GOOD;
 }
