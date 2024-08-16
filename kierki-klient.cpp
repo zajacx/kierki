@@ -131,7 +131,6 @@ uint16_t read_port(std::string port_s) {
 }
 
 /*
-// Translates host and port info to server's address.
 struct sockaddr_in6 get_server_address(std::string host, uint16_t port) {
 
     struct addrinfo hints;
@@ -172,6 +171,7 @@ std::string prepend_ipv6_mapped_prefix(const std::string& ip_address) {
     return "::ffff:" + ip_address;
 }
 
+// Translates host and port info to server's address.
 struct sockaddr_storage get_server_address(const std::string& host, uint16_t port, bool ipv4, bool ipv6) {
     std::string m_host = prepend_ipv6_mapped_prefix(host);
     struct addrinfo hints, *address_result, *p;
@@ -305,6 +305,18 @@ void disconnect_from_server(bool* connected, int socket_fd) {
     }   
 }
 
+// Message sending
+
+// Sends IAM<place> message to the server.
+void send_iam(char place, int socket_fd) {
+    char buffer[] = "IAMN\r\n"; 
+    buffer[3] = place;
+    ssize_t written_bytes = writen(socket_fd, buffer, 6);
+    if (written_bytes <= 0) {
+        throw std::runtime_error("writen (iam)");
+    }
+}
+
 int main(int argc, char** argv) {
 
     // Input data:
@@ -326,15 +338,14 @@ int main(int argc, char** argv) {
 
     
     try {
+        // Client initialization:
         parse_arguments(argc, argv, &host, &port_s, &place, &ipv4, &ipv6, &robot);
         print_options_info(host, port_s, place, ipv4, ipv6, robot); // TEST
         connect_to_server(port_s, &port, host, ipv4, ipv6, &server_address,
                           &socket_fd, &connected, &family);
+        send_iam(place, socket_fd);
+        // Game:
 
-        
-        char buffer[] = "IAMN\r\n"; 
-        buffer[3] = place;
-        ssize_t written_bytes = write(socket_fd, buffer, 6);
 
         // tutaj można odebrać albo BUSY albo DEAL
 

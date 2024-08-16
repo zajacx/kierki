@@ -509,7 +509,7 @@ void calculate_remaining_time(struct pollfd* poll_fds, struct ClientInfo* client
     *poll_timeout = min_timeout;
 }
 
-// ------------------------------ Message parsers ------------------------------
+// ---------------------------------- Utils ----------------------------------
 
 int map_place(char place) {
     switch (place) {
@@ -525,46 +525,15 @@ int map_place(char place) {
     return 0;
 }
 
-/*
-// Reads from given descriptor until it finds "\r\n" sequence.
-// Writes read sequence to an external buffer ext_buffer
-// Returns number of read bytes or -1 in case of error.
-int read_to_newline(int descriptor, char* ext_buffer) {
-    
-    char buf;
-    size_t p = 0;
-    ssize_t last_read_size;
+// ---------------------------- Sending messages ----------------------------
 
-    memset(ext_buffer, 0, BUFFER_SIZE);
+// functions of type: send_<message>()
 
-    int count = 0;
-    while (count < READING_LIMIT) {
-        ssize_t read_byte = readn(descriptor, &buf, 1, &last_read_size);
-        if (read_byte < 0) {
-            return (int) read_byte;
-        } else if (read_byte == 0) {
-            break;
-        } else if (read_byte == 1) {
-            count++;
-            ext_buffer[p++] = buf;
-            // Check for message termination:
-            if (p >= 2 && ext_buffer[p] && 
-                ext_buffer[p - 1] == '\n' && 
-                ext_buffer[p - 2] == '\r')
-            {
-                ext_buffer[p] = '\0';
-                return count;
-            }
-        } else {
-            throw std::runtime_error("weird error in readn");
-        }
 
-    }
 
-    // Return number of read bytes:
-    return count;
-}
-*/
+// --------------------------- Receiving messages ---------------------------
+
+// functions of type: recv_<message>()
 
 // Reads from given descriptor until it finds "\r\n" sequence.
 // Writes read sequence to an external buffer ext_buffer
@@ -593,13 +562,17 @@ int read_to_newline(int descriptor, std::string* result) {
             throw std::runtime_error("weird error in readn");
         }
     }
-
-        // Return number of read bytes:
-        return count;
+    // Return number of read bytes:
+    return count;
 }
 
 
-int iam_parser(const std::string& message, char* result) {
+// ---------------------------- Parsing messages -------------------------------
+// |   All parsers return 0 if a message is parsed correctly, 1 if it's not.   |
+// -----------------------------------------------------------------------------
+
+// Parser for a message of type: IAM<place>.
+int parse_iam(const std::string& message, char* result) {
     // Length:
     if (message.length() != 6) {
         std::cerr << "Error: Incorrect message length." << std::endl;
@@ -627,6 +600,63 @@ int iam_parser(const std::string& message, char* result) {
     // If all checks pass, return the place character
     *result = place;
     return GOOD;
+}
+
+/*
+// prefix:
+std::string str = "Hello, World!";
+std::string prefix = str.substr(0, 5); // "Hello"
+
+// suffix:
+std::string str = "Hello, World!";
+std::string suffix = str.substr(str.length() - 6, 6); // "World!"
+
+// infix:
+std::string str = "Hello, World!";
+std::string middle = str.substr(7, 5); // "World"
+
+// rest of the string starting from given position:
+std::string str = "Hello, World!";
+std::string rest = str.substr(7); // "World!"
+*/
+
+// Parser for a message of type: TRICK<1...13><card>.
+int parse_trick(const std::string& message, char* result) {
+    // Length:
+    if (message.length() < 10 || message.length() > 12) {
+        std::cerr << "Error: Incorrect message length" << std::endl;
+        return ERROR;
+    }
+    // "TRICK"
+    if (message.substr(0, 5) != "TRICK") {
+        std::cerr << "Error: Message does not start with 'TRICK'" << std::endl;
+        return ERROR;
+    }
+    // Check if the message ends with "\r\n"
+    if (message.substr(message.length() - 2, 2) != "\r\n") {
+        std::cerr << "Error: Message does not end with '\\r\\n'" << std::endl;
+        return ERROR;
+    }
+    char suit = message[message.length() - 3];
+    if (suit != 'C' || suit != 'D' || suit != 'H' || suit != 'S') {
+        std::cerr << "Error: Incorrect card suit" << std::endl;
+        return ERROR;
+    }
+
+    // na razie logika wydobywania wartości jest zła - kontrprzykład: 79
+    char value = message[message.length() - 4];
+    int v = 0;
+    if (value == '0') {
+        if (message[message.length() - 5] == '1') {
+            v = 10;
+        } else {
+            std::cerr << "Error: Incorrect card value" << std::endl;
+            return ERROR;
+        }
+    } else {
+        v = value - '0';
+    }
+    
 }
 
 // -------------------------------- Test prints --------------------------------
@@ -751,7 +781,7 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
                         std::cout << "received " << received_bytes << " bytes within connection (id: " << i << ")\n";
                         std::cout << "parsing message: " << buffer << "\n";
                         char place;
-                        if (iam_parser(buffer, &place) == 0) {
+                        if (parse_iam(buffer, &place) == 0) {
                             std::cout << "received IAM" << place << "\n";
                             get_occupied_places(clients, is_place_occupied);
                             int p = map_place(place);
