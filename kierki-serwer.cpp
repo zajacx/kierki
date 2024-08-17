@@ -6,12 +6,15 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <regex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include <arpa/inet.h>
+#include <assert.h>
 #include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
@@ -53,8 +56,6 @@
 #define OUTPUT 6
 */
 
-#define IAM_SIZE 6
-
 // ---------------------- Declarations & Data Structures ----------------------
 
 using Clock = std::chrono::steady_clock;
@@ -73,6 +74,14 @@ struct Card {
     char suit;
 
     Card(std::string v, char s) : value(v), suit(s) {}
+    
+    bool operator==(const Card& other) const {
+        return value == other.value && suit == other.suit;
+    }
+
+    bool operator<(const Card& other) const {
+        return (value < other.value) || (value == other.value && suit < other.suit);
+    }
 };
 
 struct Hand {
@@ -80,6 +89,13 @@ struct Hand {
 
     void add_card(const Card& card) {
         cards.push_back(card);
+    }
+
+    void remove_card(const std::string& value, char suit) {
+        auto it = std::find(cards.begin(), cards.end(), Card(value, suit));
+        if (it != cards.end()) {
+            cards.erase(it);
+        }
     }
 };
 
@@ -102,35 +118,59 @@ struct Game {
 // -------------------------- Functions for structs --------------------------
 
 // Card parser.
-Card parse_card(const std::string& hand_str, size_t& pos) {
-    std::string value;
-    char suit;
+Card parse_card(const std::string& hand_str, size_t& pos, bool* fmt_ok) {
+    std::string value = "";
+    char suit = 'X';
+    bool value_ok = false;
+    bool suit_ok = false;
 
     if (hand_str[pos] == '1' && hand_str[pos + 1] == '0') {
         value = "10";
+        value_ok = true;
         pos += 2;
     } else {
         value = hand_str[pos];
-        pos += 1;
+        if ((hand_str[pos] >= '2' && hand_str[pos] <= '9') ||
+            hand_str[pos] == 'J' || hand_str[pos] == 'Q' ||
+            hand_str[pos] == 'K' || hand_str[pos] == 'A') {
+            value_ok = true;
+            pos += 1;
+        } else {
+            value_ok = false;
+        }
     }
 
     if (pos < hand_str.size()) {
         suit = hand_str[pos];
-        pos += 1;
+        if (suit == 'C' || suit == 'D' || suit == 'H' || suit == 'S') {
+            suit_ok = true;
+            pos += 1;
+        } else {
+            suit_ok = false;
+        }
     } else {
-        throw std::invalid_argument("Invalid card format: incomplete suit");
+        suit_ok = false;
+        std::cerr << "Invalid card string\n";
     }
 
+    *fmt_ok = (value_ok && suit_ok);
     return Card(value, suit);
 }
 
 // Hand parser.
-void parse_hand(const std::string& hand_str, Hand& hand) {
+// Doesn't need 13 cards and correctly parses every correct string.
+int parse_card_set(const std::string& hand_str, std::vector<Card>& card_vector) {
     size_t pos = 0;
     while (pos < hand_str.size()) {
-        Card card = parse_card(hand_str, pos);
-        hand.add_card(card);
+        bool fmt_ok;
+        Card card = parse_card(hand_str, pos, &fmt_ok);
+        if (fmt_ok) {
+            card_vector.push_back(card);
+        } else {
+            return ERROR;
+        }
     }
+    return GOOD;
 }
 
 // Game description parser.
@@ -152,7 +192,7 @@ Game parse_game_file(const std::string& filename) {
 
         for (int i = 0; i < 4; ++i) {
             std::getline(file, line);
-            parse_hand(line, round.hands[i]);
+            parse_card_set(line, round.hands[i].cards);
         }
 
         game.add_round(round);
@@ -571,7 +611,7 @@ int read_to_newline(int descriptor, std::string* result) {
 // |   All parsers return 0 if a message is parsed correctly, 1 if it's not.   |
 // -----------------------------------------------------------------------------
 
-// Parser for a message of type: IAM<place>.
+/*
 int parse_iam(const std::string& message, char* result) {
     // Length:
     if (message.length() != 6) {
@@ -601,63 +641,72 @@ int parse_iam(const std::string& message, char* result) {
     *result = place;
     return GOOD;
 }
-
-/*
-// prefix:
-std::string str = "Hello, World!";
-std::string prefix = str.substr(0, 5); // "Hello"
-
-// suffix:
-std::string str = "Hello, World!";
-std::string suffix = str.substr(str.length() - 6, 6); // "World!"
-
-// infix:
-std::string str = "Hello, World!";
-std::string middle = str.substr(7, 5); // "World"
-
-// rest of the string starting from given position:
-std::string str = "Hello, World!";
-std::string rest = str.substr(7); // "World!"
 */
 
-// Parser for a message of type: TRICK<1...13><card>.
-int parse_trick(const std::string& message, char* result) {
-    // Length:
-    if (message.length() < 10 || message.length() > 12) {
-        std::cerr << "Error: Incorrect message length" << std::endl;
-        return ERROR;
-    }
-    // "TRICK"
-    if (message.substr(0, 5) != "TRICK") {
-        std::cerr << "Error: Message does not start with 'TRICK'" << std::endl;
-        return ERROR;
-    }
-    // Check if the message ends with "\r\n"
-    if (message.substr(message.length() - 2, 2) != "\r\n") {
-        std::cerr << "Error: Message does not end with '\\r\\n'" << std::endl;
-        return ERROR;
-    }
-    char suit = message[message.length() - 3];
-    if (suit != 'C' || suit != 'D' || suit != 'H' || suit != 'S') {
-        std::cerr << "Error: Incorrect card suit" << std::endl;
-        return ERROR;
-    }
+// Parser for a message of type: IAM<place>\r\n.
+int parse_iam(const std::string& message, char* result) {
 
-    // na razie logika wydobywania wartości jest zła - kontrprzykład: 79
-    char value = message[message.length() - 4];
-    int v = 0;
-    if (value == '0') {
-        if (message[message.length() - 5] == '1') {
-            v = 10;
-        } else {
-            std::cerr << "Error: Incorrect card value" << std::endl;
-            return ERROR;
-        }
+    std::regex pattern(R"(IAM([NESW])\r\n)");
+    std::smatch match;
+
+    if (std::regex_match(message, match, pattern)) {
+        *result = match[1].str()[0];
+        return GOOD;
     } else {
-        v = value - '0';
+        return ERROR;
     }
-    
 }
+
+// Parser for a message of type: TRICK<trick number><card>\r\n.
+int parse_trick(const std::string& message, int* trick_number,
+                std::string* value, char* suit) {
+    
+    std::regex pattern(R"(TRICK([1-9]|1[0-3])(10|[2-9]|[JQKA])([CDHS])\r\n)");
+    std::smatch match;
+
+    if (std::regex_match(message, match, pattern)) {
+        *trick_number = std::stoi(match[1].str());
+        *value = match[2].str();
+        *suit = match[3].str()[0];
+        return GOOD;
+    } else {
+        return ERROR;
+    }
+}
+
+void test_parse_trick() {
+    // Correct:
+    int trick_number;
+    std::string value;
+    char suit;
+    assert(parse_trick("TRICK15H\r\n", &trick_number, &value, &suit) == 0);
+    assert(trick_number == 1);
+    assert(value == "5");
+    assert(suit == 'H');
+    assert(parse_trick("TRICK125H\r\n", &trick_number, &value, &suit) == 0);
+    assert(trick_number == 12);
+    assert(value == "5");
+    assert(suit == 'H');
+    assert(parse_trick("TRICK110H\r\n", &trick_number, &value, &suit) == 0);
+    assert(trick_number == 1);
+    assert(value == "10");
+    assert(suit == 'H');
+    assert(parse_trick("TRICK1310H\r\n", &trick_number, &value, &suit) == 0);
+    assert(trick_number == 13);
+    assert(value == "10");
+    assert(suit == 'H');
+    assert(parse_trick("TRICK5KS\r\n", &trick_number, &value, &suit) == 0);
+    assert(trick_number == 5);
+    assert(value == "K");
+    assert(suit == 'S');
+    // Wrong:
+    assert(parse_trick("aTRICK5KS\r\n", &trick_number, &value, &suit) == 1);
+    assert(parse_trick("TRICK0KS\r\n", &trick_number, &value, &suit) == 1);
+    assert(parse_trick("TRICKS\r\n", &trick_number, &value, &suit) == 1);
+    assert(parse_trick("TRICK500S\r\n", &trick_number, &value, &suit) == 1);
+    assert(parse_trick("TRICK59M\r\n", &trick_number, &value, &suit) == 1);
+}
+
 
 // -------------------------------- Test prints --------------------------------
 
@@ -869,6 +918,7 @@ int main(int argc, char** argv) {
     // State:
     size_t active_clients = 0;
 
+    /*
     try {
         parse_arguments(argc, argv, &port_s, &filename, &timeout);
         print_options_info(port_s, filename, timeout);
@@ -882,6 +932,7 @@ int main(int argc, char** argv) {
         // close_server();
         return ERROR;
     }
+    */
 
     /*
     TEST PARSERA PLIKU:
@@ -907,6 +958,14 @@ int main(int argc, char** argv) {
         std::cerr << "Error: " << ex.what() << std::endl;
     }
     */
+
+   // TESTY PARSERÓW:
+   try {
+        test_parse_trick();
+    } catch (const std::exception& ex) {
+        std::cerr << "Error: " << ex.what() << std::endl;
+    }
+
     // close_server();
     return GOOD;
 }

@@ -10,7 +10,10 @@
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <assert.h>
 #include <errno.h>
+#include <regex>
+#include <set>
 #include <limits.h>
 #include <netdb.h>
 #include <stddef.h>
@@ -26,6 +29,116 @@
 
 #define GOOD 0
 #define ERROR 1
+
+#define HAND 13
+
+// ---------------------- Declarations -----------------------
+
+struct Card {
+    std::string value;
+    char suit;
+
+    Card(std::string v, char s) : value(v), suit(s) {}
+    
+    bool operator==(const Card& other) const {
+        return value == other.value && suit == other.suit;
+    }
+
+    bool operator<(const Card& other) const {
+        return (value < other.value) || (value == other.value && suit < other.suit);
+    }
+};
+
+struct Hand {
+    std::vector<Card> cards;
+
+    void add_card(const Card& card) {
+        cards.push_back(card);
+    }
+
+    void remove_card(const std::string& value, char suit) {
+        auto it = std::find(cards.begin(), cards.end(), Card(value, suit));
+        if (it != cards.end()) {
+            cards.erase(it);
+        }
+    }
+};
+
+struct Round {
+    int round_type;
+    char starting_player;
+    Hand hands[4];
+
+    Round(int type, char starter) : round_type(type), starting_player(starter) {}
+};
+
+struct Game {
+    std::vector<Round> rounds;
+
+    void add_round(const Round& round) {
+        rounds.push_back(round);
+    }
+};
+
+// -------------------------- Functions for structs --------------------------
+
+// Card parser.
+Card parse_card(const std::string& hand_str, size_t& pos, bool* fmt_ok) {
+    std::string value = "";
+    char suit = 'X';
+    bool value_ok = false;
+    bool suit_ok = false;
+
+    if (hand_str[pos] == '1' && hand_str[pos + 1] == '0') {
+        value = "10";
+        value_ok = true;
+        pos += 2;
+    } else {
+        value = hand_str[pos];
+        if ((hand_str[pos] >= '2' && hand_str[pos] <= '9') ||
+            hand_str[pos] == 'J' || hand_str[pos] == 'Q' ||
+            hand_str[pos] == 'K' || hand_str[pos] == 'A') {
+            value_ok = true;
+            pos += 1;
+        } else {
+            value_ok = false;
+        }
+    }
+
+    if (pos < hand_str.size()) {
+        suit = hand_str[pos];
+        if (suit == 'C' || suit == 'D' || suit == 'H' || suit == 'S') {
+            suit_ok = true;
+            pos += 1;
+        } else {
+            suit_ok = false;
+        }
+    } else {
+        suit_ok = false;
+        std::cerr << "Invalid card string\n";
+    }
+
+    *fmt_ok = (value_ok && suit_ok);
+    return Card(value, suit);
+}
+
+// Hand parser.
+// Doesn't need 13 cards and correctly parses every correct string.
+int parse_card_set(const std::string& hand_str, std::vector<Card>& card_vector) {
+    size_t pos = 0;
+    while (pos < hand_str.size()) {
+        bool fmt_ok;
+        Card card = parse_card(hand_str, pos, &fmt_ok);
+        if (fmt_ok) {
+            card_vector.push_back(card);
+        } else {
+            return ERROR;
+        }
+    }
+    return GOOD;
+}
+
+// -------------------------- Initialization -------------------------
 
 // Sets variables describing input options.
 int set_input_variables(int argc, char** argv, std::string* host, std::string* port, 
@@ -317,6 +430,275 @@ void send_iam(char place, int socket_fd) {
     }
 }
 
+// ------------------------------ Parsers ---------------------------------
+
+// Parser for a message of type: BUSY<place list>\r\n.
+int parse_busy(const std::string& message, std::vector<char>& busy_places) {
+
+    std::regex pattern(R"(BUSY([NESW]{1,4})\r\n)");
+    std::smatch match;
+
+    busy_places.clear();
+
+    if (std::regex_match(message, match, pattern)) {
+        std::string places = match[1].str();
+        std::set<char> places_set(places.begin(), places.end());
+        if (places.size() == places_set.size()) {
+            for (char c : places_set) {
+                busy_places.push_back(c);
+            }
+        } else {
+            std::cerr << "Wrong message format, ignored\n";
+            return ERROR;
+        }
+        return GOOD;
+    } else {
+        return ERROR;
+    }
+}
+
+void test_parse_busy() {
+    std::vector<char> busy_places;
+    // Correct:
+    assert(parse_busy("BUSYN\r\n", busy_places) == 0);
+    for (char c : busy_places) {
+        std::cout << c << " "; 
+    }
+    std::cout << "\n";
+    busy_places.clear();
+    assert(parse_busy("BUSYS\r\n", busy_places) == 0);
+    for (char c : busy_places) {
+        std::cout << c << " "; 
+    }
+    std::cout << "\n";
+    busy_places.clear();
+    assert(parse_busy("BUSYNES\r\n", busy_places) == 0);
+    for (char c : busy_places) {
+        std::cout << c << " "; 
+    }
+    std::cout << "\n";
+    busy_places.clear();
+    assert(parse_busy("BUSYNWES\r\n", busy_places) == 0);
+    for (char c : busy_places) {
+        std::cout << c << " "; 
+    }
+    std::cout << "\n";
+    busy_places.clear();
+    assert(parse_busy("BUSYWE\r\n", busy_places) == 0);
+    for (char c : busy_places) {
+        std::cout << c << " "; 
+    }
+    std::cout << "\n";
+    busy_places.clear();
+    // Wrong:
+    assert(parse_busy("BUSY\r\n", busy_places) == 1);
+    busy_places.clear();
+    assert(parse_busy("BUS", busy_places) == 1);
+    busy_places.clear();
+    assert(parse_busy("BUSY\n", busy_places) == 1);
+    busy_places.clear();
+    assert(parse_busy("BUSYNESENSE\r\n", busy_places) == 1);
+    busy_places.clear();
+    assert(parse_busy("BUSYWXD\r\n", busy_places) == 1);
+    busy_places.clear();
+    assert(parse_busy("BUSYN\r", busy_places) == 1);
+}
+
+/*
+// Parser for a message of type: DEAL<round type><starting player><card list>\r\n.
+int parse_deal(const std::string& message, int* round_type, 
+               char* starting_player, Hand& hand) {
+
+    std::regex pattern(R"(DEAL([1-7])([NESW])((2|3|4|5|6|7|8|9|10|J|Q|K|A)(C|D|H|S)){13}\r\n)");
+    std::smatch match;
+
+    hand.cards.clear();
+
+    if (std::regex_match(message, match, pattern)) {
+        for (int i = 0; i < match.size(); i++) {
+            std::cout << "match[" << i << "]: " << match[i] << "\n";
+        }
+        *round_type = std::stoi(match[1].str());
+        *starting_player = match[2].str()[0];
+        // Process the matched cards
+        std::string card_list = match[3].str();
+        size_t pos = 0;
+        while (pos < card_list.length()) {
+            std::string value;
+            if (card_list[pos] == '1' && card_list[pos + 1] == '0') {
+                value = "10";
+                pos += 2;
+            } else {
+                value = card_list.substr(pos, 1);
+                pos += 1;
+            }
+            char suit = card_list[pos];
+            pos += 1;
+
+            hand.add_card(Card(value, suit));
+        }
+        return GOOD;
+    } else {
+        return ERROR;
+    }
+}
+*/
+
+// Parser for a message of type: DEAL<round type><starting player><card list>\r\n.
+int parse_deal(const std::string& message, int* round_type, 
+               char* starting_player, Hand& hand) {
+
+    std::regex pattern(R"(DEAL([1-7])([NESW])(.+)\r\n)");
+    std::smatch match;
+
+    hand.cards.clear();
+
+    if (std::regex_match(message, match, pattern)) {
+        
+        *round_type = std::stoi(match[1].str());
+        *starting_player = match[2].str()[0];
+        
+        if (parse_card_set(match[3].str(), hand.cards) == 0) {
+            std::set<Card> card_set;
+            for (auto& card : hand.cards) {
+                card_set.insert(Card(card.value, card.suit));
+            }
+            
+            if (card_set.size() == HAND) {
+                return GOOD;
+            } else {
+                std::cerr << "didn't get 13 unique cards\n";
+                return ERROR;
+            }
+        } else {
+            return ERROR;
+        }
+    } else {
+        return ERROR;
+    }
+}
+
+void test_parse_deal() {
+    int round_type;
+    char starting_player;
+    Hand hand;
+    // CORRECT:
+    assert(parse_deal("DEAL3W2D3D4D5D6D7D8D9D10DJDQDKDAD\r\n", &round_type, &starting_player, hand) == 0);
+    std::cout << "Round Type: " << round_type << std::endl;
+    std::cout << "Starting Player: " << starting_player << std::endl;
+    std::cout << "Hand Cards: ";
+    for (const auto& card : hand.cards) {
+        std::cout << card.value << card.suit << " ";
+    }
+    std::cout << std::endl;
+    assert(parse_deal("DEAL1N2C2S5H4S6D10D8H7SKCAHASJCQD\r\n", &round_type, &starting_player, hand) == 0);
+    std::cout << "Round Type: " << round_type << std::endl;
+    std::cout << "Starting Player: " << starting_player << std::endl;
+    std::cout << "Hand Cards: ";
+    for (const auto& card : hand.cards) {
+        std::cout << card.value << card.suit << " ";
+    }
+    std::cout << std::endl;
+    assert(parse_deal("DEAL7SJCQDKHAS2D3C4S5H6H7H8S9C10D\r\n", &round_type, &starting_player, hand) == 0);
+    std::cout << "Round Type: " << round_type << std::endl;
+    std::cout << "Starting Player: " << starting_player << std::endl;
+    std::cout << "Hand Cards: ";
+    for (const auto& card : hand.cards) {
+        std::cout << card.value << card.suit << " ";
+    }
+    std::cout << std::endl;
+    // WRONG:
+    assert(parse_deal("DEAL3N2C3D4H5S6C7D8H10CKDQHAKS\r\n", &round_type, &starting_player, hand) == 1);
+    assert(parse_deal("DEAL3N2C3D4H5S6C7D8M9S10CKDQHAKS\r\n", &round_type, &starting_player, hand) == 1);
+    assert(parse_deal("DEAL3N2C3D4H5S6C7D8H5C9S10CKDQHAKS\r\n", &round_type, &starting_player, hand) == 1);
+    assert(parse_deal("aDEAL3N2C3D4H5S6C7D8H9S10CKDQHAKS\r\n", &round_type, &starting_player, hand) == 1);
+    assert(parse_deal("DEAL3N2C3D4H5S6C7D8H9S10CKDQHAKS\r\n", &round_type, &starting_player, hand) == 1);
+}
+
+// Parser for a message of type: TRICK<trick number><card list>\r\n.
+int parse_trick(const std::string& message, int* trick_number, std::vector<Card>& on_table) {
+    
+    std::regex pattern(R"(TRICK([1-9]|1[0-3])(.*)\r\n)");
+    std::smatch match;
+
+    on_table.clear();
+
+    if (std::regex_match(message, match, pattern)) {
+        *trick_number = std::stoi(match[1].str());
+        if (match[2].str().length() == 0) {
+            return GOOD;
+        } 
+        else if (parse_card_set(match[2].str(), on_table) == 0) {
+            std::set<Card> card_set;
+            for (auto& card : on_table) {
+                card_set.insert(Card(card.value, card.suit));
+            }
+
+            if (on_table.size() >= 0 && on_table.size() <= 3 && card_set.size() == on_table.size()) {
+                return GOOD;
+            } else {
+                std::cerr << "didn't get from 0 to 3 unique cards\n";
+                return ERROR;
+            }
+        } else {
+            return ERROR;
+        }
+    } else {
+        return ERROR;
+    }
+}
+
+void test_parse_trick() {
+    // Correct:
+    int trick_number;
+    std::vector<Card> on_table;
+    assert(parse_trick("TRICK15H3H4H\r\n", &trick_number, on_table) == 0);
+    assert(parse_trick("TRICK1\r\n", &trick_number, on_table) == 0);
+    assert(parse_trick("TRICK12H\r\n", &trick_number, on_table) == 0);
+    assert(parse_trick("TRICK12H3H\r\n", &trick_number, on_table) == 0);
+    assert(parse_trick("TRICK\r\n", &trick_number, on_table) == 1);
+    // Wrong:
+    assert(parse_trick("aTRICK5KS\r\n", &trick_number, on_table) == 1);
+    assert(parse_trick("TRICK0KS\r\n", &trick_number, on_table) == 1);
+    assert(parse_trick("TRICKS\r\n", &trick_number, on_table) == 1);
+    assert(parse_trick("TRICK500S\r\n", &trick_number, on_table) == 1);
+    assert(parse_trick("TRICK59M\r\n", &trick_number, on_table) == 1);
+}
+
+// Parser for a message of type: WRONG<trick number>\r\n.
+int parse_wrong(const std::string& message, int* trick_number) {
+
+    std::regex pattern(R"(WRONG([1-9]|1[0-3])\r\n)");
+    std::smatch match;
+
+    if (std::regex_match(message, match, pattern)) {
+        *trick_number = std::stoi(match[1].str());
+        return GOOD;
+    } else {
+        return ERROR;
+    }
+}
+
+void test_parse_wrong() {
+    // Correct:
+    int trick_number;
+    assert(parse_wrong("WRONG1\r\n", &trick_number) == 0);
+    assert(parse_wrong("WRONG2\r\n", &trick_number) == 0);
+    assert(parse_wrong("WRONG3\r\n", &trick_number) == 0);
+    assert(parse_wrong("WRONG4\r\n", &trick_number) == 0);
+    assert(parse_wrong("WRONG10\r\n", &trick_number) == 0);
+    assert(parse_wrong("WRONG12\r\n", &trick_number) == 0);
+    assert(parse_wrong("WRONG13\r\n", &trick_number) == 0);
+    // Wrong:
+    assert(parse_wrong("WRONG0\r\n", &trick_number) == 1);
+    assert(parse_wrong("WRON\r\n", &trick_number) == 1);
+    assert(parse_wrong("aWRONG12\r\n", &trick_number) == 1);
+    assert(parse_wrong("WRONG14\r\n", &trick_number) == 1);
+}
+
+// To write: TAKEN, SCORE, TOTAL
+
+
 int main(int argc, char** argv) {
 
     // Input data:
@@ -336,7 +718,7 @@ int main(int argc, char** argv) {
     // State:
     bool connected = false;
 
-    
+    /*
     try {
         // Client initialization:
         parse_arguments(argc, argv, &host, &port_s, &place, &ipv4, &ipv6, &robot);
@@ -360,8 +742,19 @@ int main(int argc, char** argv) {
         disconnect_from_server(&connected, socket_fd);
         return ERROR;
     }
+    */
 
-    disconnect_from_server(&connected, socket_fd);
+    // Test parserów:
+    try {
+        test_parse_wrong();
+
+    } catch (const std::exception& e) {
+        std::cerr << "Error: " << e.what() << "\n";
+        // disconnect_from_server(&connected, socket_fd);
+        return ERROR;
+    }
+
+    //disconnect_from_server(&connected, socket_fd);
     return GOOD;
 }
 
