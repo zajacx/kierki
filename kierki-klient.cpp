@@ -432,6 +432,21 @@ void send_iam(char place, int socket_fd) {
 
 // ------------------------------ Parsers ---------------------------------
 
+int map_place(char place) {
+    switch (place) {
+        case 'N':
+            return 0;
+        case 'E':
+            return 1;
+        case 'S':
+            return 2;
+        case 'W':
+            return 3;
+    }
+    return 0;
+}
+
+
 // Parser for a message of type: BUSY<place list>\r\n.
 int parse_busy(const std::string& message, std::vector<char>& busy_places) {
 
@@ -456,6 +471,194 @@ int parse_busy(const std::string& message, std::vector<char>& busy_places) {
         return ERROR;
     }
 }
+
+// Parser for a message of type: DEAL<round type><starting player><card list>\r\n.
+int parse_deal(const std::string& message, int* round_type, 
+               char* starting_player, Hand& hand) {
+
+    std::regex pattern(R"(DEAL([1-7])([NESW])(.+)\r\n)");
+    std::smatch match;
+
+    hand.cards.clear();
+
+    if (std::regex_match(message, match, pattern)) {
+        
+        *round_type = std::stoi(match[1].str());
+        *starting_player = match[2].str()[0];
+        
+        if (parse_card_set(match[3].str(), hand.cards) == 0) {
+            std::set<Card> card_set;
+            for (auto& card : hand.cards) {
+                card_set.insert(Card(card.value, card.suit));
+            }
+            
+            if (card_set.size() == HAND) {
+                return GOOD;
+            } else {
+                std::cerr << "didn't get 13 unique cards\n";
+                return ERROR;
+            }
+        } else {
+            return ERROR;
+        }
+    } else {
+        return ERROR;
+    }
+}
+
+// Parser for a message of type: TRICK<trick number><card list>\r\n.
+int parse_trick(const std::string& message, int* trick_number,
+                std::vector<Card>& on_table, bool round_one) {
+    
+    std::regex pattern;
+    if (round_one) {
+        pattern = R"(TRICK(1)(.*)\r\n)";
+    } else {
+        pattern = R"(TRICK([2-9]|1[0-3])(.*)\r\n)";
+    }
+    std::smatch match;
+
+    on_table.clear();
+
+    if (std::regex_match(message, match, pattern)) {
+
+        *trick_number = std::stoi(match[1].str());
+        
+        if (match[2].str().length() == 0) {
+            return GOOD;
+        } 
+        else if (parse_card_set(match[2].str(), on_table) == 0) {
+            std::set<Card> card_set;
+            for (auto& card : on_table) {
+                card_set.insert(Card(card.value, card.suit));
+            }
+
+            if (on_table.size() >= 0 && on_table.size() <= 3 && card_set.size() == on_table.size()) {
+                return GOOD;
+            } else {
+                std::cerr << "didn't get from 0 to 3 unique cards\n";
+                return ERROR;
+            }
+        } else {
+            return ERROR;
+        }
+    } else {
+        return ERROR;
+    }
+}
+
+// Parser for a message of type: WRONG<trick number>\r\n.
+int parse_wrong(const std::string& message, int* trick_number) {
+
+    std::regex pattern(R"(WRONG([1-9]|1[0-3])\r\n)");
+    std::smatch match;
+
+    if (std::regex_match(message, match, pattern)) {
+        *trick_number = std::stoi(match[1].str());
+        return GOOD;
+    } else {
+        return ERROR;
+    }
+}
+
+// Parser for a message of type: TAKEN<trick number><card list><player taking cards>\r\n.
+int parse_taken(const std::string& message, int* trick_number,
+                std::vector<Card>& cards, char* taken_by, bool round_one) {
+    
+    std::regex pattern;
+    if (round_one) {
+        pattern = R"(TAKEN(1)(.+)([NESW])\r\n)";
+    } else {
+        pattern = R"(TAKEN(1[0-3]|[2-9])(.+)([NESW])\r\n)";
+    }
+    std::smatch match;
+
+    cards.clear();
+
+    if (std::regex_match(message, match, pattern)) {
+
+        *trick_number = std::stoi(match[1].str());
+        std::string card_list = match[2].str();
+        *taken_by = match[3].str()[0];
+
+        if (parse_card_set(card_list, cards) == 0) {
+            std::set<Card> card_set;
+            for (auto& card : cards) {
+                card_set.insert(Card(card.value, card.suit));
+            }
+
+            if (cards.size() == 4 && cards.size() == card_set.size()) {
+                return GOOD;
+            } else {
+                std::cerr << "didn't get 4 unique cards\n";
+                return ERROR;
+            }
+        } else {
+            std::cerr << "parsing error\n";
+            return ERROR;
+        }
+    } else {
+        std::cerr << "not match\n";
+        return ERROR;
+    }
+
+}
+
+// Parser for a message of type: SCORE<player name><points>[...]\r\n.
+int parse_score(const std::string& message, int* scores) {
+
+    std::regex pattern(R"(SCORE(N|E|S|W)(\d+)(N|E|S|W)(\d+)(N|E|S|W)(\d+)(N|E|S|W)(\d+)\r\n)");
+    std::smatch match;
+
+    for (int i = 0; i < 4; i++) {
+        scores[i] = -1;
+    }
+
+    if (std::regex_match(message, match, pattern)) {
+        for (int i = 1; i < match.size(); i += 2) {
+            int place = map_place(match[i].str()[0]);
+            scores[place] = std::stoi(match[i + 1].str());
+        }
+        for (int i = 0; i < 4; i++) {
+            if (scores[i] == -1) {
+                std::cerr << "Didn't receive points of all players\n";
+                return ERROR;
+            }
+        }
+        return GOOD;
+    } else {
+        return ERROR;
+    }
+}
+
+// Parser for a message of type: TOTAL<player name><points>[...]\r\n.
+int parse_total(const std::string& message, int* scores) {
+
+    std::regex pattern(R"(TOTAL(N|E|S|W)(\d+)(N|E|S|W)(\d+)(N|E|S|W)(\d+)(N|E|S|W)(\d+)\r\n)");
+    std::smatch match;
+
+    for (int i = 0; i < 4; i++) {
+        scores[i] = -1;
+    }
+
+    if (std::regex_match(message, match, pattern)) {
+        for (int i = 1; i < match.size(); i += 2) {
+            int place = map_place(match[i].str()[0]);
+            scores[place] = std::stoi(match[i + 1].str());
+        }
+        for (int i = 0; i < 4; i++) {
+            if (scores[i] == -1) {
+                std::cerr << "Didn't receive points of all players\n";
+                return ERROR;
+            }
+        }
+        return GOOD;
+    } else {
+        return ERROR;
+    }
+}
+
+// ----------------------------- Tests -------------------------------
 
 void test_parse_busy() {
     std::vector<char> busy_places;
@@ -504,80 +707,6 @@ void test_parse_busy() {
     assert(parse_busy("BUSYN\r", busy_places) == 1);
 }
 
-/*
-// Parser for a message of type: DEAL<round type><starting player><card list>\r\n.
-int parse_deal(const std::string& message, int* round_type, 
-               char* starting_player, Hand& hand) {
-
-    std::regex pattern(R"(DEAL([1-7])([NESW])((2|3|4|5|6|7|8|9|10|J|Q|K|A)(C|D|H|S)){13}\r\n)");
-    std::smatch match;
-
-    hand.cards.clear();
-
-    if (std::regex_match(message, match, pattern)) {
-        for (int i = 0; i < match.size(); i++) {
-            std::cout << "match[" << i << "]: " << match[i] << "\n";
-        }
-        *round_type = std::stoi(match[1].str());
-        *starting_player = match[2].str()[0];
-        // Process the matched cards
-        std::string card_list = match[3].str();
-        size_t pos = 0;
-        while (pos < card_list.length()) {
-            std::string value;
-            if (card_list[pos] == '1' && card_list[pos + 1] == '0') {
-                value = "10";
-                pos += 2;
-            } else {
-                value = card_list.substr(pos, 1);
-                pos += 1;
-            }
-            char suit = card_list[pos];
-            pos += 1;
-
-            hand.add_card(Card(value, suit));
-        }
-        return GOOD;
-    } else {
-        return ERROR;
-    }
-}
-*/
-
-// Parser for a message of type: DEAL<round type><starting player><card list>\r\n.
-int parse_deal(const std::string& message, int* round_type, 
-               char* starting_player, Hand& hand) {
-
-    std::regex pattern(R"(DEAL([1-7])([NESW])(.+)\r\n)");
-    std::smatch match;
-
-    hand.cards.clear();
-
-    if (std::regex_match(message, match, pattern)) {
-        
-        *round_type = std::stoi(match[1].str());
-        *starting_player = match[2].str()[0];
-        
-        if (parse_card_set(match[3].str(), hand.cards) == 0) {
-            std::set<Card> card_set;
-            for (auto& card : hand.cards) {
-                card_set.insert(Card(card.value, card.suit));
-            }
-            
-            if (card_set.size() == HAND) {
-                return GOOD;
-            } else {
-                std::cerr << "didn't get 13 unique cards\n";
-                return ERROR;
-            }
-        } else {
-            return ERROR;
-        }
-    } else {
-        return ERROR;
-    }
-}
-
 void test_parse_deal() {
     int round_type;
     char starting_player;
@@ -615,68 +744,41 @@ void test_parse_deal() {
     assert(parse_deal("DEAL3N2C3D4H5S6C7D8H9S10CKDQHAKS\r\n", &round_type, &starting_player, hand) == 1);
 }
 
-// Parser for a message of type: TRICK<trick number><card list>\r\n.
-int parse_trick(const std::string& message, int* trick_number, std::vector<Card>& on_table) {
-    
-    std::regex pattern(R"(TRICK([1-9]|1[0-3])(.*)\r\n)");
-    std::smatch match;
-
-    on_table.clear();
-
-    if (std::regex_match(message, match, pattern)) {
-        *trick_number = std::stoi(match[1].str());
-        if (match[2].str().length() == 0) {
-            return GOOD;
-        } 
-        else if (parse_card_set(match[2].str(), on_table) == 0) {
-            std::set<Card> card_set;
-            for (auto& card : on_table) {
-                card_set.insert(Card(card.value, card.suit));
-            }
-
-            if (on_table.size() >= 0 && on_table.size() <= 3 && card_set.size() == on_table.size()) {
-                return GOOD;
-            } else {
-                std::cerr << "didn't get from 0 to 3 unique cards\n";
-                return ERROR;
-            }
-        } else {
-            return ERROR;
-        }
-    } else {
-        return ERROR;
-    }
-}
-
 void test_parse_trick() {
     // Correct:
     int trick_number;
     std::vector<Card> on_table;
-    assert(parse_trick("TRICK15H3H4H\r\n", &trick_number, on_table) == 0);
-    assert(parse_trick("TRICK1\r\n", &trick_number, on_table) == 0);
-    assert(parse_trick("TRICK12H\r\n", &trick_number, on_table) == 0);
-    assert(parse_trick("TRICK12H3H\r\n", &trick_number, on_table) == 0);
-    assert(parse_trick("TRICK\r\n", &trick_number, on_table) == 1);
-    // Wrong:
-    assert(parse_trick("aTRICK5KS\r\n", &trick_number, on_table) == 1);
-    assert(parse_trick("TRICK0KS\r\n", &trick_number, on_table) == 1);
-    assert(parse_trick("TRICKS\r\n", &trick_number, on_table) == 1);
-    assert(parse_trick("TRICK500S\r\n", &trick_number, on_table) == 1);
-    assert(parse_trick("TRICK59M\r\n", &trick_number, on_table) == 1);
-}
-
-// Parser for a message of type: WRONG<trick number>\r\n.
-int parse_wrong(const std::string& message, int* trick_number) {
-
-    std::regex pattern(R"(WRONG([1-9]|1[0-3])\r\n)");
-    std::smatch match;
-
-    if (std::regex_match(message, match, pattern)) {
-        *trick_number = std::stoi(match[1].str());
-        return GOOD;
-    } else {
-        return ERROR;
+    assert(parse_trick("TRICK15H3H4H\r\n", &trick_number, on_table, true) == 0);
+    std::cout << "trick number: " << trick_number << "\n";
+    for (Card card : on_table) {
+        std::cout << card.value << card.suit << " ";
     }
+    std::cout << "\n";
+    assert(parse_trick("TRICK1\r\n", &trick_number, on_table, true) == 0);
+    std::cout << "trick number: " << trick_number << "\n";
+    for (Card card : on_table) {
+        std::cout << card.value << card.suit << " ";
+    }
+    std::cout << "\n";
+    assert(parse_trick("TRICK12H\r\n", &trick_number, on_table, true) == 0);
+    std::cout << "trick number: " << trick_number << "\n";
+    for (Card card : on_table) {
+        std::cout << card.value << card.suit << " ";
+    }
+    std::cout << "\n";
+    assert(parse_trick("TRICK12H3H\r\n", &trick_number, on_table, true) == 0);
+    std::cout << "trick number: " << trick_number << "\n";
+    for (Card card : on_table) {
+        std::cout << card.value << card.suit << " ";
+    }
+    std::cout << "\n";
+    assert(parse_trick("TRICK\r\n", &trick_number, on_table, false) == 1);
+    // Wrong:
+    assert(parse_trick("aTRICK5KS\r\n", &trick_number, on_table, false) == 1);
+    assert(parse_trick("TRICK0KS\r\n", &trick_number, on_table, false) == 1);
+    assert(parse_trick("TRICKS\r\n", &trick_number, on_table, false) == 1);
+    assert(parse_trick("TRICK500S\r\n", &trick_number, on_table, false) == 1);
+    assert(parse_trick("TRICK59M\r\n", &trick_number, on_table, false) == 1);
 }
 
 void test_parse_wrong() {
@@ -696,8 +798,81 @@ void test_parse_wrong() {
     assert(parse_wrong("WRONG14\r\n", &trick_number) == 1);
 }
 
-// To write: TAKEN, SCORE, TOTAL
+void test_parse_taken() {
+    // Correct:
+    int trick_number;
+    char taken_by;
+    std::vector<Card> cards;
+    assert(parse_taken("TAKEN15H3H4H9HS\r\n", &trick_number, cards, &taken_by, true) == 0);
+    std::cout << "trick_number: " << trick_number << "\n";
+    std::cout << "taken_by: " << taken_by << "\n";
+    std::cout << "cards: ";
+    for (Card card : cards) {
+        std::cout << card.value << card.suit << " ";
+    }
+    std::cout << "\n";
+    assert(parse_taken("TAKEN124C10CKCACN\r\n", &trick_number, cards, &taken_by, false) == 0);
+    std::cout << "trick_number: " << trick_number << "\n";
+    std::cout << "taken_by: " << taken_by << "\n";
+    std::cout << "cards: ";
+    for (Card card : cards) {
+        std::cout << card.value << card.suit << " ";
+    }
+    std::cout << "\n";
+    assert(parse_taken("TAKEN105C6D7H10SS\r\n", &trick_number, cards, &taken_by, false) == 0);
+    std::cout << "trick_number: " << trick_number << "\n";
+    std::cout << "taken_by: " << taken_by << "\n";
+    std::cout << "cards: ";
+    for (Card card : cards) {
+        std::cout << card.value << card.suit << " ";
+    }
+    std::cout << "\n";
+    assert(parse_taken("TAKEN12H3H4H5HW\r\n", &trick_number, cards, &taken_by, true) == 0);
+    std::cout << "trick_number: " << trick_number << "\n";
+    std::cout << "taken_by: " << taken_by << "\n";
+    std::cout << "cards: ";
+    for (Card card : cards) {
+        std::cout << card.value << card.suit << " ";
+    }
+    std::cout << "\n";
+    // Wrong:
+    assert(parse_taken("TAKEN\r\n", &trick_number, cards, &taken_by, false) == 1);
+    assert(parse_taken("TAKEN47H8H9H10HN\n", &trick_number, cards, &taken_by, false) == 1);
+    assert(parse_taken("aTAKEN15H3H4H9HS\r\n", &trick_number, cards, &taken_by, false) == 1);
+    assert(parse_taken("TAKEN10HKDAHQDE\r\n", &trick_number, cards, &taken_by, false) == 1);
+}
 
+void test_parse_score() {
+    int scores[4];
+    // Correct:
+    assert(parse_score("SCOREN35E22S41W17\r\n", scores) == 0);
+    std::cout << "TEST 1:\n";
+    for (int i = 0; i < 4; i++) {
+        std::cout << scores[i] << " ";
+    }
+    std::cout << "\n";
+    assert(parse_score("SCOREW0E12345S0N17\r\n", scores) == 0);
+    std::cout << "TEST 2:\n";
+    for (int i = 0; i < 4; i++) {
+        std::cout << scores[i] << " ";
+    }
+    std::cout << "\n";
+    assert(parse_score("SCOREN2E2222S41W0\r\n", scores) == 0);
+    std::cout << "TEST 3:\n";
+    for (int i = 0; i < 4; i++) {
+        std::cout << scores[i] << " ";
+    }
+    std::cout << "\n";
+    // Wrong:
+    assert(parse_score("aSCOREN2E2222S41W0\r\n", scores) == 1);
+    assert(parse_score("SCOREN2N2222S41W0\r\n", scores) == 1);
+    assert(parse_score("SCOREN2E2222S41W0\n", scores) == 1);
+    assert(parse_score("SCORENE2222S41W2\r\n", scores) == 1);
+    assert(parse_score("SCOREN2E2222N41W0\r\n", scores) == 1);
+}
+
+
+// ----------------------------- Main -------------------------------
 
 int main(int argc, char** argv) {
 
@@ -746,7 +921,7 @@ int main(int argc, char** argv) {
 
     // Test parserów:
     try {
-        test_parse_wrong();
+        test_parse_trick();
 
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
