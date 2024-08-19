@@ -67,6 +67,8 @@ struct ClientInfo {
     std::string ip_and_port;
     TimePoint connection_time;
     int chosen_position;
+    int round_points;
+    int total_points;
 };
 
 struct Card {
@@ -81,6 +83,10 @@ struct Card {
 
     bool operator<(const Card& other) const {
         return (value < other.value) || (value == other.value && suit < other.suit);
+    }
+
+    std::string to_string() {
+        return value + suit;
     }
 };
 
@@ -394,6 +400,8 @@ void initialize_clients_info(struct ClientInfo* clients) {
         clients[i].ip_and_port = "";
         clients[i].connection_time = TimePoint();
         clients[i].chosen_position = 0;
+        clients[i].round_points = 0;
+        clients[i].total_points = 0;
     }
 }
 
@@ -403,7 +411,9 @@ void clear_client_info(struct ClientInfo* clients, int i) {
     clients[i].port = 0;
     clients[i].ip_and_port = "";
     clients[i].connection_time = TimePoint();
-    clients[i].chosen_position = 0;
+    // clients[i].chosen_position = 0;
+    // round_points and total_points are not cleared, because
+    // new player inherits them
 }
 
 // Initializes an array for the info about occupied places.
@@ -876,6 +886,131 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
 
     std::cout << "Connections established, game is starting...\n";
 }
+
+/*
+------------------------ GAME -------------------------
+
+TODO: test struct functions: adding card, removing card
+
+struct Game {
+    vector<Round> rounds;
+
+    void add_round(const Round& round) {
+        rounds.push_back(round);
+    }
+}
+
+struct Hand {
+    std::vector<Card> cards;
+
+    void add_card(const Card& card) {
+        cards.push_back(card);
+    }
+
+    void remove_card(const std::string& value, char suit) {
+        auto it = std::find(cards.begin(), cards.end(), Card(value, suit));
+        if (it != cards.end()) {
+            cards.erase(it);
+        }
+    }
+};
+
+struct Round {
+    int round_type;
+    char starting_player;
+    Hand hands[5]; // zerowa ręka jest pusta, bo graczy indeksujemy od 1
+
+    Round(int type, char starter) : round_type(type), starting_player(starter) {}
+};
+
+PORZĄDKOWANIE KART:
+map<string, int> map_value;
+// analogiczna mapa dla graczy zamiast funkcji mapującej? MOŻNA!
+
+
+POMYSŁ NA PRZYZNAWANIE PUNKTÓW:
+
+struct RoundPoints {
+    map<std::string, int> value_points;
+    map<char, int> color_points;
+};
+
+struct RoundPoints round_points[ROUND_TYPES];
+
+// na początku każdego rozdania wyciągamy structa określonego przez round_type.
+// po każdym wzięciu lewy iterujemy po kartach i sumujemy punkty 
+
+Gracz, który wyłożył najstarszą kartę w kolorze karty gracza wychodzącego,
+bierze lewę i wychodzi jako pierwszy w następnej lewie.
+
+#define TRICKS_IN_ROUND 13
+#define ROUND_TYPES 7
+
+// Rozegraj n rozdań (zdefiniowanych w pliku wejściowym)
+// UWAGA: każda runda w trakcie rozgrywania ma cały czas edytowaną swoją
+// strukturę (przede wszystkim usuwanie kart z rąk)
+
+for (Round round : Game.rounds) {
+
+    struct RoundPoints points = round_points[round_type];
+    int player = map_place(starting_player);
+
+    // Na początku każdego rozdania wyślij DEAL do wszystkich:
+    broadcast_deal();
+
+    // Rozegraj 13 lew:
+    for (int l = 1; l <= TRICKS_IN_ROUND; l++) {
+
+        // Vector na wyłożone karty:
+        std::vector<Card> cards_on_table;
+
+        int biggest_value = 0;
+        int winner = player;
+        char starter_suit;
+    
+        // W każdej lewie wymień TRICK z każdym graczem.
+        for (int i = 1; i <= CONNECTIONS; i++) {
+
+            send_trick(); // TRICK + od 0 do 3 wyłożonych kart (w kolejności), konwersja przez to_string
+
+            std::string value;
+            char suit;
+            recv_trick(l, &value, &suit); // numer lewy dla sprawdzenia poprawności
+            check();      // sprawdź legalność
+
+            cards_on_table.push_back(Card(value, suit));
+
+            if (i == 1) {
+                starter_suit = suit; // zapamiętaj kolor gracza wychodzącego jako pierwszy
+                biggest_value = map_value[value];
+            }
+            if (map_value[value] > biggest_value && suit == starter_suit) { // dla wychodzącego zawsze niespełnione
+                biggest_value = map_value[value];
+                winner = player;
+            }
+
+            // Cyclic incrementation, 0 is ommited to fit indices in clients' array:
+            player = (player == 4) ? 1 : (player + 1);
+        }
+
+        // Przyznaj punkty:
+        for (Card card : cards_on_table) {
+            std::string value = card.value;
+            char suit = card.suit;
+            clients[winner].round_points += points[value] + points[suit];
+            clients[winner].total_points += points[value] + points[suit];
+        }
+
+    }
+
+    broadcast_score(); // sprawdzić czy tylko po całym rozdaniu (ale chyba tak)
+    broadcast_total();
+
+}
+
+// po rozdaniu wyczyść klasyfikację w rozdaniu, zachowaj klasyfikację generalną
+
+*/
 
 // Manages the game.
 void game() {
