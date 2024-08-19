@@ -611,38 +611,6 @@ int read_to_newline(int descriptor, std::string* result) {
 // |   All parsers return 0 if a message is parsed correctly, 1 if it's not.   |
 // -----------------------------------------------------------------------------
 
-/*
-int parse_iam(const std::string& message, char* result) {
-    // Length:
-    if (message.length() != 6) {
-        std::cerr << "Error: Incorrect message length." << std::endl;
-        return ERROR;
-    }
-    // "IAM"
-    if (message.substr(0, 3) != "IAM") {
-        std::cerr << "Error: Message does not start with 'IAM'." << std::endl;
-        return ERROR;
-    }
-
-    char place = message[3];
-    // 'N', 'E', 'S', or 'W'
-    if (place != 'N' && place != 'E' && place != 'S' && place != 'W') {
-        std::cerr << "Error: Invalid place character." << std::endl;
-        return ERROR;
-    }
-
-    // Check if the message ends with "\r\n"
-    if (message.substr(4, 2) != "\r\n") {
-        std::cerr << "Error: Message does not end with '\\r\\n'." << std::endl;
-        return ERROR;
-    }
-
-    // If all checks pass, return the place character
-    *result = place;
-    return GOOD;
-}
-*/
-
 // Parser for a message of type: IAM<place>\r\n.
 int parse_iam(const std::string& message, char* result) {
 
@@ -750,6 +718,61 @@ void print_clients(struct ClientInfo* clients) {
     std::cout << "\n";
 }
 
+// ------------------------------ Event handlers --------------------------------
+
+// Handles an event (client's connection request) on main descriptor.
+void handle_new_client_request(int* active_clients, struct pollfd* poll_fds, struct ClientInfo* clients) {
+    if (*active_clients < CONNECTIONS) {
+        accept_client(poll_fds, clients);
+        (*active_clients)++;
+        std::cout << "Client " << *active_clients << " accepted\n"; // test
+    } else {
+        std::cerr << "Maximum clients reached, connection rejected\n";
+    }
+}
+
+// Handles an event (new message) on given (i-th) descriptor.
+void handle_pollin(struct pollfd* poll_fds, int i, struct ClientInfo* clients,
+                   int* active_clients, int* ready, bool* is_place_occupied) {
+    ssize_t last_read_size;
+    std::string buffer = "";
+                    
+    int received_bytes = read_to_newline(poll_fds[i].fd, &buffer);
+
+    if (received_bytes < 0) {
+        disconnect_client(poll_fds, clients, active_clients, ready, i);
+        std::cerr << "readn failed: ending connection (id: " << i << ")\n";
+    } else if (received_bytes == 0) {
+        disconnect_client(poll_fds, clients, active_clients, ready, i);
+        std::cerr << "empty readn: ending connection (id: " << i << ")\n";
+    } else {
+        std::cout << "received " << received_bytes << " bytes within connection (id: " << i << ")\n";
+        std::cout << "parsing message: " << buffer << "\n";
+        char place;
+        if (parse_iam(buffer, &place) == 0) {
+            std::cout << "received IAM" << place << "\n";
+            get_occupied_places(clients, is_place_occupied);
+            int p = map_place(place);
+            if (!is_place_occupied[p]) {
+                clients[i].chosen_position = p;
+                (*ready)++;
+            } else {
+                // tutaj wysyłamy BUSY<listazajetychmiejsc>
+            }
+
+        } else {
+            // czy to jest na pewno to samo?
+            close(poll_fds[i].fd);
+            (*active_clients)--;
+            // if (clients[i].chosen_position != 0) ready--;
+            clear_descriptor(poll_fds, i);
+            clear_client_info(clients, i);
+            std::cerr << "Wrong message from client (id: " << i << "), disconnected\n";
+        }
+    }
+} 
+
+
 /**
  * CONNECTION
  * - struct pollfd* ready_poll_fds is a pointer to an array of sorted clients data
@@ -778,9 +801,6 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
     int active_clients = 0;
     int ready = 0;
 
-    //static char buffer[BUFFER_SIZE];
-    std::string buffer;
-
     do {
         for (int i = 0; i < POLL_SIZE; i++) {
             poll_fds[i].revents = 0;
@@ -800,13 +820,10 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
         if (poll_status > 0) {
             // New connection: new client is accepted.
             if (poll_fds[0].revents & POLLIN) {
-                if (active_clients < CONNECTIONS) {
-                    accept_client(poll_fds, clients);
-                    active_clients++;
-                    std::cout << "Client " << active_clients << " accepted\n"; 
-                } else {
-                    std::cerr << "Maximum clients reached, connection rejected\n";
-                }
+
+                handle_new_client_request(&active_clients, poll_fds, clients);
+                std::cout << "active_clients after connection: " << active_clients << "\n";
+
             }
             // Serve connected clients - receive IAM or reject message/connection.
             for (int i = 1; i <= CONNECTIONS; i++) {
@@ -814,44 +831,8 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
                 // POLLIN <=> received a message.
                 if (poll_fds[i].fd != -1 && (poll_fds[i].revents & POLLIN)) {
 
-                    ssize_t last_read_size;
-                    buffer = "";
+                    handle_pollin(poll_fds, i, clients, &active_clients, &ready, is_place_occupied);
                     
-                    // ssize_t received_bytes = readn(poll_fds[i].fd, buffer, IAM_SIZE, &last_read_size);
-                    int received_bytes = read_to_newline(poll_fds[i].fd, &buffer);
-
-                    if (received_bytes < 0) {
-                        disconnect_client(poll_fds, clients, &active_clients, &ready, i);
-                        std::cerr << "readn failed: ending connection (id: " << i << ")\n";
-                    } else if (received_bytes == 0) {
-                        disconnect_client(poll_fds, clients, &active_clients, &ready, i);
-                        std::cerr << "empty readn: ending connection (id: " << i << ")\n";
-                    } else {
-                        std::cout << "received " << received_bytes << " bytes within connection (id: " << i << ")\n";
-                        std::cout << "parsing message: " << buffer << "\n";
-                        char place;
-                        if (parse_iam(buffer, &place) == 0) {
-                            std::cout << "received IAM" << place << "\n";
-                            get_occupied_places(clients, is_place_occupied);
-                            int p = map_place(place);
-                            if (!is_place_occupied[p]) {
-                                clients[i].chosen_position = p;
-                                ready++;
-                            } else {
-                                // tutaj wysyłamy BUSY<listazajetychmiejsc>
-                            }
-
-                            
-                        } else {
-                            // czy to jest na pewno to samo?
-                            close(poll_fds[i].fd);
-                            active_clients--;
-                            // if (clients[i].chosen_position != 0) ready--;
-                            clear_descriptor(poll_fds, i);
-                            clear_client_info(clients, i);
-                            std::cerr << "Wrong message from client (id: " << i << "), disconnected\n";
-                        }
-                    }
                 }
                 // POLLHUP <=> client disconnected.
                 else if (poll_fds[i].fd != -1 && (poll_fds[i].revents & POLLHUP)) {
@@ -888,10 +869,17 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
         ready_clients[p].chosen_position = clients[i].chosen_position;
     }
 
+    // test:
+
     print_poll_fds(ready_poll_fds);
     print_clients(ready_clients);
 
     std::cout << "Connections established, game is starting...\n";
+}
+
+// Manages the game.
+void game() {
+
 }
 
 // ---------------------------------- Main ----------------------------------
@@ -912,28 +900,30 @@ int main(int argc, char** argv) {
 
     struct pollfd poll_fds[POLL_SIZE];
     struct ClientInfo clients[POLL_SIZE]; // clients[0] is empty.
+
+    Game game;
     
-    static char buffer[BUFFER_SIZE];
+    // static char buffer[BUFFER_SIZE];
 
     // State:
-    size_t active_clients = 0;
+    // size_t active_clients = 0; // now connections variable shadows this one
 
-    /*
     try {
         parse_arguments(argc, argv, &port_s, &filename, &timeout);
-        print_options_info(port_s, filename, timeout);
+        print_options_info(port_s, filename, timeout); // test
+        game = parse_game_file(filename);
         initialize_main_socket(&socket_fd, port_s, &port, &server_address, &ip_and_port);
         initialize_descriptors(poll_fds, socket_fd);
         initialize_clients_info(clients);
         connect_with_players(poll_fds, clients, timeout, socket_fd);
+        // game();
         
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         // close_server();
         return ERROR;
     }
-    */
-
+    
     /*
     TEST PARSERA PLIKU:
     try {
@@ -957,15 +947,16 @@ int main(int argc, char** argv) {
     } catch (const std::exception& ex) {
         std::cerr << "Error: " << ex.what() << std::endl;
     }
-    */
+    
 
-   // TESTY PARSERÓW:
-   try {
-        test_parse_trick();
+    // TESTY PARSERÓW:
+    try {
+         test_parse_trick();
     } catch (const std::exception& ex) {
         std::cerr << "Error: " << ex.what() << std::endl;
     }
 
     // close_server();
     return GOOD;
+    */
 }

@@ -533,7 +533,7 @@ int parse_trick(const std::string& message, int* trick_number,
                 card_set.insert(Card(card.value, card.suit));
             }
 
-            if (on_table.size() >= 0 && on_table.size() <= 3 && card_set.size() == on_table.size()) {
+            if (on_table.size() <= 3 && card_set.size() == on_table.size()) {
                 return GOOD;
             } else {
                 std::cerr << "didn't get from 0 to 3 unique cards\n";
@@ -615,7 +615,7 @@ int parse_score(const std::string& message, int* scores) {
     }
 
     if (std::regex_match(message, match, pattern)) {
-        for (int i = 1; i < match.size(); i += 2) {
+        for (int i = 1; i < (int) match.size(); i += 2) {
             int place = map_place(match[i].str()[0]);
             scores[place] = std::stoi(match[i + 1].str());
         }
@@ -642,7 +642,7 @@ int parse_total(const std::string& message, int* scores) {
     }
 
     if (std::regex_match(message, match, pattern)) {
-        for (int i = 1; i < match.size(); i += 2) {
+        for (int i = 1; i < (int) match.size(); i += 2) {
             int place = map_place(match[i].str()[0]);
             scores[place] = std::stoi(match[i + 1].str());
         }
@@ -893,7 +893,6 @@ int main(int argc, char** argv) {
     // State:
     bool connected = false;
 
-    /*
     try {
         // Client initialization:
         parse_arguments(argc, argv, &host, &port_s, &place, &ipv4, &ipv6, &robot);
@@ -917,8 +916,8 @@ int main(int argc, char** argv) {
         disconnect_from_server(&connected, socket_fd);
         return ERROR;
     }
-    */
-
+    
+    /*
     // Test parserów:
     try {
         test_parse_trick();
@@ -928,8 +927,9 @@ int main(int argc, char** argv) {
         // disconnect_from_server(&connected, socket_fd);
         return ERROR;
     }
+    */
 
-    //disconnect_from_server(&connected, socket_fd);
+    disconnect_from_server(&connected, socket_fd);
     return GOOD;
 }
 
