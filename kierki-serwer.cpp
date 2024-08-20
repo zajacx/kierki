@@ -6,6 +6,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <regex>
 #include <set>
 #include <sstream>
@@ -44,6 +45,7 @@
 #define READING_LIMIT 200 // has to be less than BUFFER_SIZE
 #define TIMEOUT 500
 
+#define ROUND_TYPES 7
 
 #define DEFAULT_PORT 0
 
@@ -70,6 +72,68 @@ struct ClientInfo {
     int round_points;
     int total_points;
 };
+
+static std::map<std::string, int> map_value = {
+    {"2", 2},
+    {"3", 3},
+    {"4", 4},
+    {"5", 5},
+    {"6", 6},
+    {"7", 7},
+    {"8", 8},
+    {"9", 9},
+    {"10", 10},
+    {"J", 11},
+    {"Q", 12},
+    {"K", 13},
+    {"A", 14},
+};
+
+struct RoundPoints {
+    std::map<std::string, int> value_points;
+    std::map<char, int> color_points;
+};
+
+static RoundPoints round_points[ROUND_TYPES + 1] = {
+    {},
+    // 1. nie brać lew - uwzględnione w logice gry
+    {
+        {},
+        {}
+    },
+    // 2. nie brać kierów
+    {
+        {},
+        { {'H', 1} } // Punkt za każdego wziętego kiera
+    },
+    // 3. nie brać dam
+    {
+        { {"Q", 5} }, // 5 punktów za każdą wziętą damę
+        {}
+    },
+    // 4. nie brać panów (waletów i króli)
+    {
+        { {"J", 2}, {"K", 2} }, // 2 punkty za każdego waleta i króla
+        {}
+    },
+    // 5. nie brać króla kier - uwzględnione w logice gry
+    {
+        {},
+        {}
+    },
+    // 6. nie brać siódmej i ostatniej lewy - uwzględnione w logice gry
+    {
+        {},
+        {}
+    },
+    // 7. rozbójnik - punkty za wszystko powyżej
+    {
+        { {"Q", 5}, {"J", 2}, {"K", 2} },  // Punkty za damy, walety, króli
+        { {'H', 1} }                       // Punkt za kier
+    }
+};
+
+static int points_in_total[ROUND_TYPES + 1] = {0, 13, 13, 20, 16, 18, 20, 100};
 
 struct Card {
     std::string value;
@@ -952,7 +1016,9 @@ bierze lewę i wychodzi jako pierwszy w następnej lewie.
 
 for (Round round : Game.rounds) {
 
-    struct RoundPoints points = round_points[round_type];
+    int type = round.round_type;
+    int points_left = points_in_total[type];
+    struct RoundPoints points = round_points[type];
     int player = map_place(starting_player);
 
     // Na początku każdego rozdania wyślij DEAL do wszystkich:
@@ -979,6 +1045,7 @@ for (Round round : Game.rounds) {
             check();      // sprawdź legalność
 
             cards_on_table.push_back(Card(value, suit));
+            round.hands[i].remove_card(value, suit);
 
             if (i == 1) {
                 starter_suit = suit; // zapamiętaj kolor gracza wychodzącego jako pierwszy
@@ -994,11 +1061,33 @@ for (Round round : Game.rounds) {
         }
 
         // Przyznaj punkty:
+        if (type == 1 || type == 7) {
+            clients[winner].round_points++;
+            clients[winner].total_points++;
+            points_left--;
+        }
+        if ((type == 6 || type == 7) && (l == 7 || l == 13)) {
+            clients[winner].round_points += 10;
+            clients[winner].total_points += 10;
+            points_left -= 10;
+        }
+
         for (Card card : cards_on_table) {
             std::string value = card.value;
             char suit = card.suit;
             clients[winner].round_points += points[value] + points[suit];
             clients[winner].total_points += points[value] + points[suit];
+            points_left -= points[value] + points[suit];
+            if ((type == 5 || type == 7) && value == "K" && suit == 'H') {
+                clients[winner].round_points += 18;
+                clients[winner].total_points += 18;
+                points_left -= 18;
+            }
+        }
+
+        if (points_left == 0) {
+            // kończymy rozdanie, bo wszystkie punkty zostały już rozdysponowane:
+            break;
         }
 
     }
