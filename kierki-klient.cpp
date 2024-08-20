@@ -34,6 +34,13 @@
 
 // ---------------------- Declarations -----------------------
 
+static std::map<char, int> map_place = {
+    {'N', 1},
+    {'E', 2},
+    {'S', 3},
+    {'W', 4}
+};
+
 struct Card {
     std::string value;
     char suit;
@@ -421,30 +428,22 @@ void disconnect_from_server(bool* connected, int socket_fd) {
 // Message sending
 
 // Sends IAM<place> message to the server.
-void send_iam(char place, int socket_fd) {
-    char buffer[] = "IAMN\r\n"; 
-    buffer[3] = place;
-    ssize_t written_bytes = writen(socket_fd, buffer, 6);
+void send_iam(int socket_fd, char place) {
+
+    std::string message = "IAM";
+
+    message += place;
+
+    message += "\r\n";
+
+    ssize_t written_bytes = writen(socket_fd, message.c_str(), message.length());
     if (written_bytes <= 0) {
         throw std::runtime_error("writen (iam)");
     }
 }
 
-// ------------------------------ Parsers ---------------------------------
 
-int map_place(char place) {
-    switch (place) {
-        case 'N':
-            return 0;
-        case 'E':
-            return 1;
-        case 'S':
-            return 2;
-        case 'W':
-            return 3;
-    }
-    return 0;
-}
+// ------------------------------ Parsers ---------------------------------
 
 
 // Parser for a message of type: BUSY<place list>\r\n.
@@ -610,16 +609,16 @@ int parse_score(const std::string& message, int* scores) {
     std::regex pattern(R"(SCORE(N|E|S|W)(\d+)(N|E|S|W)(\d+)(N|E|S|W)(\d+)(N|E|S|W)(\d+)\r\n)");
     std::smatch match;
 
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i <= 4; i++) {
         scores[i] = -1;
     }
 
     if (std::regex_match(message, match, pattern)) {
         for (int i = 1; i < (int) match.size(); i += 2) {
-            int place = map_place(match[i].str()[0]);
+            int place = map_place[match[i].str()[0]];
             scores[place] = std::stoi(match[i + 1].str());
         }
-        for (int i = 0; i < 4; i++) {
+        for (int i = 1; i <= 4; i++) {
             if (scores[i] == -1) {
                 std::cerr << "Didn't receive points of all players\n";
                 return ERROR;
@@ -637,16 +636,16 @@ int parse_total(const std::string& message, int* scores) {
     std::regex pattern(R"(TOTAL(N|E|S|W)(\d+)(N|E|S|W)(\d+)(N|E|S|W)(\d+)(N|E|S|W)(\d+)\r\n)");
     std::smatch match;
 
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i <= 4; i++) {
         scores[i] = -1;
     }
 
     if (std::regex_match(message, match, pattern)) {
         for (int i = 1; i < (int) match.size(); i += 2) {
-            int place = map_place(match[i].str()[0]);
+            int place = map_place[match[i].str()[0]];
             scores[place] = std::stoi(match[i + 1].str());
         }
-        for (int i = 0; i < 4; i++) {
+        for (int i = 1; i <= 4; i++) {
             if (scores[i] == -1) {
                 std::cerr << "Didn't receive points of all players\n";
                 return ERROR;
@@ -843,23 +842,23 @@ void test_parse_taken() {
 }
 
 void test_parse_score() {
-    int scores[4];
+    int scores[5];
     // Correct:
     assert(parse_score("SCOREN35E22S41W17\r\n", scores) == 0);
     std::cout << "TEST 1:\n";
-    for (int i = 0; i < 4; i++) {
+    for (int i = 1; i <= 4; i++) {
         std::cout << scores[i] << " ";
     }
     std::cout << "\n";
     assert(parse_score("SCOREW0E12345S0N17\r\n", scores) == 0);
     std::cout << "TEST 2:\n";
-    for (int i = 0; i < 4; i++) {
+    for (int i = 1; i <= 4; i++) {
         std::cout << scores[i] << " ";
     }
     std::cout << "\n";
     assert(parse_score("SCOREN2E2222S41W0\r\n", scores) == 0);
     std::cout << "TEST 3:\n";
-    for (int i = 0; i < 4; i++) {
+    for (int i = 1; i <= 4; i++) {
         std::cout << scores[i] << " ";
     }
     std::cout << "\n";
@@ -893,6 +892,7 @@ int main(int argc, char** argv) {
     // State:
     bool connected = false;
 
+    /*
     try {
         // Client initialization:
         parse_arguments(argc, argv, &host, &port_s, &place, &ipv4, &ipv6, &robot);
@@ -916,20 +916,21 @@ int main(int argc, char** argv) {
         disconnect_from_server(&connected, socket_fd);
         return ERROR;
     }
+    */
     
-    /*
+    
     // Test parserów:
     try {
-        test_parse_trick();
+        test_parse_score();
 
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         // disconnect_from_server(&connected, socket_fd);
         return ERROR;
     }
-    */
+    
 
-    disconnect_from_server(&connected, socket_fd);
+    // disconnect_from_server(&connected, socket_fd);
     return GOOD;
 }
 

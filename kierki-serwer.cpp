@@ -46,6 +46,7 @@
 #define TIMEOUT 500
 
 #define ROUND_TYPES 7
+#define TRICKS_IN_ROUND 13
 
 #define DEFAULT_PORT 0
 
@@ -60,6 +61,9 @@
 
 // ---------------------- Declarations & Data Structures ----------------------
 
+// Buffer to use in writen, each buffer for readn is local.
+// static char buffer[BUFFER_SIZE];
+
 using Clock = std::chrono::steady_clock;
 using TimePoint = std::chrono::time_point<Clock>;
 
@@ -73,6 +77,20 @@ struct ClientInfo {
     int total_points;
 };
 
+static std::map<char, int> map_place = {
+    {'N', 1},
+    {'E', 2},
+    {'S', 3},
+    {'W', 4}
+};
+
+static std::map<int, char> map_int_to_place_name = {
+    {1, 'N'},
+    {2, 'E'},
+    {3, 'S'},
+    {4, 'W'}
+};
+ 
 static std::map<std::string, int> map_value = {
     {"2", 2},
     {"3", 3},
@@ -91,45 +109,55 @@ static std::map<std::string, int> map_value = {
 
 struct RoundPoints {
     std::map<std::string, int> value_points;
-    std::map<char, int> color_points;
+    std::map<char, int> suit_points;
 };
 
+/*
+ROUND TYPES:
+1. 1 point for a whole trick,
+2. 1 point for each heart,
+3. 5 points for each queen,
+4. 2 points for each king/jack,
+5. 18 points for a KH card, 
+6. 10 points for taking 7th/13th trick,
+7. points for everything mentioned above.
+*/
 static RoundPoints round_points[ROUND_TYPES + 1] = {
     {},
-    // 1. nie brać lew - uwzględnione w logice gry
+    // 1.
     {
         {},
         {}
     },
-    // 2. nie brać kierów
+    // 2.
     {
         {},
-        { {'H', 1} } // Punkt za każdego wziętego kiera
+        { {'H', 1} }
     },
-    // 3. nie brać dam
+    // 3.
     {
-        { {"Q", 5} }, // 5 punktów za każdą wziętą damę
+        { {"Q", 5} },
         {}
     },
-    // 4. nie brać panów (waletów i króli)
+    // 4.
     {
-        { {"J", 2}, {"K", 2} }, // 2 punkty za każdego waleta i króla
+        { {"J", 2}, {"K", 2} },
         {}
     },
-    // 5. nie brać króla kier - uwzględnione w logice gry
-    {
-        {},
-        {}
-    },
-    // 6. nie brać siódmej i ostatniej lewy - uwzględnione w logice gry
+    // 5.
     {
         {},
         {}
     },
-    // 7. rozbójnik - punkty za wszystko powyżej
+    // 6.
     {
-        { {"Q", 5}, {"J", 2}, {"K", 2} },  // Punkty za damy, walety, króli
-        { {'H', 1} }                       // Punkt za kier
+        {},
+        {}
+    },
+    // 7.
+    {
+        { {"Q", 5}, {"J", 2}, {"K", 2} },
+        { {'H', 1} }
     }
 };
 
@@ -172,7 +200,8 @@ struct Hand {
 struct Round {
     int round_type;
     char starting_player;
-    Hand hands[4];
+    std::string card_strings[5];
+    Hand hands[5];
 
     Round(int type, char starter) : round_type(type), starting_player(starter) {}
 };
@@ -260,8 +289,9 @@ Game parse_game_file(const std::string& filename) {
 
         Round round(round_type, starting_player);
 
-        for (int i = 0; i < 4; ++i) {
+        for (int i = 1; i < 5; i++) {
             std::getline(file, line);
+            round.card_strings[i] = line;
             parse_card_set(line, round.hands[i].cards);
         }
 
@@ -623,31 +653,7 @@ void calculate_remaining_time(struct pollfd* poll_fds, struct ClientInfo* client
     *poll_timeout = min_timeout;
 }
 
-// ---------------------------------- Utils ----------------------------------
-
-int map_place(char place) {
-    switch (place) {
-        case 'N':
-            return 1;
-        case 'E':
-            return 2;
-        case 'S':
-            return 3;
-        case 'W':
-            return 4;
-    }
-    return 0;
-}
-
-// ---------------------------- Sending messages ----------------------------
-
-// functions of type: send_<message>()
-
-
-
 // --------------------------- Receiving messages ---------------------------
-
-// functions of type: recv_<message>()
 
 // Reads from given descriptor until it finds "\r\n" sequence.
 // Writes read sequence to an external buffer ext_buffer
@@ -792,6 +798,10 @@ void print_clients(struct ClientInfo* clients) {
     std::cout << "\n";
 }
 
+
+// tutaj będzie wysyłanie wiadomości
+
+
 // ------------------------------ Event handlers --------------------------------
 
 // Handles an event (client's connection request) on main descriptor.
@@ -805,9 +815,29 @@ void handle_new_client_request(int* active_clients, struct pollfd* poll_fds, str
     }
 }
 
+// Sends BUSY<place list> message to the client.
+void send_busy(int socket_fd, bool* is_place_occupied) {
+    
+    std::string message = "BUSY";
+    
+    if (is_place_occupied[N]) message += 'N';
+    if (is_place_occupied[E]) message += 'E';
+    if (is_place_occupied[S]) message += 'S';
+    if (is_place_occupied[W]) message += 'W';
+    
+    message += "\r\n";
+    
+    std::cout << "sending " << message << "to client\n";
+    ssize_t written_bytes = writen(socket_fd, message.c_str(), message.length());
+    if (written_bytes <= 0) {
+        throw std::runtime_error("writen (busy)");
+    }
+}
+
 // Handles an event (new message) on given (i-th) descriptor.
 void handle_pollin(struct pollfd* poll_fds, int i, struct ClientInfo* clients,
                    int* active_clients, int* ready, bool* is_place_occupied) {
+    
     ssize_t last_read_size;
     std::string buffer = "";
                     
@@ -826,12 +856,14 @@ void handle_pollin(struct pollfd* poll_fds, int i, struct ClientInfo* clients,
         if (parse_iam(buffer, &place) == 0) {
             std::cout << "received IAM" << place << "\n";
             get_occupied_places(clients, is_place_occupied);
-            int p = map_place(place);
+            int p = map_place[place];
             if (!is_place_occupied[p]) {
                 clients[i].chosen_position = p;
                 (*ready)++;
             } else {
-                // tutaj wysyłamy BUSY<listazajetychmiejsc>
+                send_busy(poll_fds[i].fd, is_place_occupied);
+                disconnect_client(poll_fds, clients, active_clients, ready, i);
+                std::cerr << "place busy: ending connection (id: " << i << ")\n";
             }
 
         } else {
@@ -844,7 +876,7 @@ void handle_pollin(struct pollfd* poll_fds, int i, struct ClientInfo* clients,
             std::cerr << "Wrong message from client (id: " << i << "), disconnected\n";
         }
     }
-} 
+}
 
 
 /**
@@ -951,158 +983,254 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
     std::cout << "Connections established, game is starting...\n";
 }
 
+
+// ---------------------------- Sending messages ----------------------------
+
 /*
------------------------- GAME -------------------------
-
-TODO: test struct functions: adding card, removing card
-
-struct Game {
-    vector<Round> rounds;
-
-    void add_round(const Round& round) {
-        rounds.push_back(round);
-    }
-}
-
-struct Hand {
-    std::vector<Card> cards;
-
-    void add_card(const Card& card) {
-        cards.push_back(card);
-    }
-
-    void remove_card(const std::string& value, char suit) {
-        auto it = std::find(cards.begin(), cards.end(), Card(value, suit));
-        if (it != cards.end()) {
-            cards.erase(it);
-        }
-    }
-};
-
-struct Round {
-    int round_type;
-    char starting_player;
-    Hand hands[5]; // zerowa ręka jest pusta, bo graczy indeksujemy od 1
-
-    Round(int type, char starter) : round_type(type), starting_player(starter) {}
-};
-
-PORZĄDKOWANIE KART:
-map<string, int> map_value;
-// analogiczna mapa dla graczy zamiast funkcji mapującej? MOŻNA!
-
-
-POMYSŁ NA PRZYZNAWANIE PUNKTÓW:
-
-struct RoundPoints {
-    map<std::string, int> value_points;
-    map<char, int> color_points;
-};
-
-struct RoundPoints round_points[ROUND_TYPES];
-
-// na początku każdego rozdania wyciągamy structa określonego przez round_type.
-// po każdym wzięciu lewy iterujemy po kartach i sumujemy punkty 
-
-Gracz, który wyłożył najstarszą kartę w kolorze karty gracza wychodzącego,
-bierze lewę i wychodzi jako pierwszy w następnej lewie.
-
-#define TRICKS_IN_ROUND 13
-#define ROUND_TYPES 7
-
-// Rozegraj n rozdań (zdefiniowanych w pliku wejściowym)
-// UWAGA: każda runda w trakcie rozgrywania ma cały czas edytowaną swoją
-// strukturę (przede wszystkim usuwanie kart z rąk)
-
-for (Round round : Game.rounds) {
-
-    int type = round.round_type;
-    int points_left = points_in_total[type];
-    struct RoundPoints points = round_points[type];
-    int player = map_place(starting_player);
-
-    // Na początku każdego rozdania wyślij DEAL do wszystkich:
-    broadcast_deal();
-
-    // Rozegraj 13 lew:
-    for (int l = 1; l <= TRICKS_IN_ROUND; l++) {
-
-        // Vector na wyłożone karty:
-        std::vector<Card> cards_on_table;
-
-        int biggest_value = 0;
-        int winner = player;
-        char starter_suit;
+// Sends BUSY<place list> message to the client.
+void send_busy(int socket_fd, bool* is_place_occupied) {
     
-        // W każdej lewie wymień TRICK z każdym graczem.
-        for (int i = 1; i <= CONNECTIONS; i++) {
-
-            send_trick(); // TRICK + od 0 do 3 wyłożonych kart (w kolejności), konwersja przez to_string
-
-            std::string value;
-            char suit;
-            recv_trick(l, &value, &suit); // numer lewy dla sprawdzenia poprawności
-            check();      // sprawdź legalność
-
-            cards_on_table.push_back(Card(value, suit));
-            round.hands[i].remove_card(value, suit);
-
-            if (i == 1) {
-                starter_suit = suit; // zapamiętaj kolor gracza wychodzącego jako pierwszy
-                biggest_value = map_value[value];
-            }
-            if (map_value[value] > biggest_value && suit == starter_suit) { // dla wychodzącego zawsze niespełnione
-                biggest_value = map_value[value];
-                winner = player;
-            }
-
-            // Cyclic incrementation, 0 is ommited to fit indices in clients' array:
-            player = (player == 4) ? 1 : (player + 1);
-        }
-
-        // Przyznaj punkty:
-        if (type == 1 || type == 7) {
-            clients[winner].round_points++;
-            clients[winner].total_points++;
-            points_left--;
-        }
-        if ((type == 6 || type == 7) && (l == 7 || l == 13)) {
-            clients[winner].round_points += 10;
-            clients[winner].total_points += 10;
-            points_left -= 10;
-        }
-
-        for (Card card : cards_on_table) {
-            std::string value = card.value;
-            char suit = card.suit;
-            clients[winner].round_points += points[value] + points[suit];
-            clients[winner].total_points += points[value] + points[suit];
-            points_left -= points[value] + points[suit];
-            if ((type == 5 || type == 7) && value == "K" && suit == 'H') {
-                clients[winner].round_points += 18;
-                clients[winner].total_points += 18;
-                points_left -= 18;
-            }
-        }
-
-        if (points_left == 0) {
-            // kończymy rozdanie, bo wszystkie punkty zostały już rozdysponowane:
-            break;
-        }
-
+    std::string message = "BUSY";
+    
+    if (is_place_occupied[N]) message += 'N';
+    if (is_place_occupied[E]) message += 'E';
+    if (is_place_occupied[S]) message += 'S';
+    if (is_place_occupied[W]) message += 'W';
+    
+    message += "\r\n";
+    
+    std::cout << "sending " << message << "to client\n";
+    ssize_t written_bytes = writen(socket_fd, message.c_str(), message.length());
+    if (written_bytes <= 0) {
+        throw std::runtime_error("writen (busy)");
     }
-
-    broadcast_score(); // sprawdzić czy tylko po całym rozdaniu (ale chyba tak)
-    broadcast_total();
-
 }
-
-// po rozdaniu wyczyść klasyfikację w rozdaniu, zachowaj klasyfikację generalną
-
 */
 
+// Sends DEAL<round type><starting player><card list> message to the client.
+void send_deal(int socket_fd, int round_type, char starting_player, std::string card_string) {
+
+    std::string message = "DEAL";
+
+    message += '0' + round_type;
+    message += starting_player;
+    message += card_string;
+
+    message += "\r\n";
+
+    ssize_t written_bytes = writen(socket_fd, message.c_str(), message.length());
+    if (written_bytes <= 0) {
+        throw std::runtime_error("writen (deal)");
+    }
+}
+
+// Sends TRICK<trick number><card list> message to the client.
+void send_trick(int socket_fd, int trick_number, std::vector<Card>& cards_on_table) {
+
+    std::string message = "TRICK";
+
+    message += std::to_string(trick_number);
+    for (Card card : cards_on_table) {
+        message += card.to_string();
+    }
+
+    message += "\r\n";
+
+    ssize_t written_bytes = writen(socket_fd, message.c_str(), message.length());
+    if (written_bytes <= 0) {
+        throw std::runtime_error("writen (trick)");
+    }
+}
+
+// Sends WRONG<trick number> message to the client.
+void send_wrong(int socket_fd, int trick_number) {
+
+    std::string message = "WRONG";
+
+    message += std::to_string(trick_number);
+
+    message += "\r\n";
+
+    ssize_t written_bytes = writen(socket_fd, message.c_str(), message.length());
+    if (written_bytes <= 0) {
+        throw std::runtime_error("writen (wrong)");
+    }
+}
+
+// Sends TAKEN<trick number><card list><trick winner> message to the client.
+void send_taken(int socket_fd, int trick_number, std::vector<Card>& cards_on_table, int winner) {
+
+    std::string message = "TAKEN";
+
+    message += std::to_string(trick_number);
+    for (Card card : cards_on_table) {
+        message += card.to_string();
+    }
+    message += map_int_to_place_name[winner];
+
+    message += "\r\n";
+
+    ssize_t written_bytes = writen(socket_fd, message.c_str(), message.length());
+    if (written_bytes <= 0) {
+        throw std::runtime_error("writen (taken)");
+    }
+}
+
+// Sends SCORE<player><points>...<player><points> message to the client.
+void send_score(int socket_fd, struct ClientInfo* clients) {
+
+    std::string message = "SCORE";
+
+    for (int i = 1; i <= 4; i++) {
+        message += map_int_to_place_name[i];
+        message += std::to_string(clients[i].round_points);
+    }
+
+    message += "\r\n";
+
+    ssize_t written_bytes = writen(socket_fd, message.c_str(), message.length());
+    if (written_bytes <= 0) {
+        throw std::runtime_error("writen (score)");
+    }
+}
+
+// Sends TOTAL<player><points>...<player><points> message to the client.
+void send_total(int socket_fd, struct ClientInfo* clients) {
+
+    std::string message = "TOTAL";
+
+    for (int i = 1; i <= 4; i++) {
+        message += map_int_to_place_name[i];
+        message += std::to_string(clients[i].total_points);
+    }
+
+    message += "\r\n";
+
+    ssize_t written_bytes = writen(socket_fd, message.c_str(), message.length());
+    if (written_bytes <= 0) {
+        throw std::runtime_error("writen (total)");
+    }
+}
+
+
+// ----------------------- Broadcast helper functions -----------------------
+
+// Calls send_deal() for each player.
+void broadcast_deal(struct ClientInfo* clients, int round_type, 
+                    char starting_player, std::string* card_strings) {
+    for (int i = 1; i <= 4; i++) {
+        send_deal(clients[i].fd, round_type, starting_player, card_strings[i]);
+    }
+}
+
+// Calls send_score() for each player.
+void broadcast_score(struct ClientInfo* clients) {
+    for (int i = 1; i <= 4; i++) {
+        send_score(clients[i].fd, clients);
+    }
+}
+
+// Calls send_total() for each player.
+void broadcast_total(struct ClientInfo* clients) {
+    for (int i = 1; i <= 4; i++) {
+        send_total(clients[i].fd, clients);
+    }
+}
+
+
+// ---------------------------------- Game ----------------------------------
+
 // Manages the game.
-void game() {
+void game(Game game, struct pollfd* poll_fds, struct ClientInfo* clients) {
+
+    for (Round round : game.rounds) {
+
+        int player = map_place[round.starting_player];
+        int type = round.round_type;
+        int points_left = points_in_total[type];
+        struct RoundPoints points = round_points[type];
+        
+        // Start the round:
+        broadcast_deal(clients, type, round.starting_player, round.card_strings);
+
+        // 13 TRICKS:
+        for (int l = 1; l <= TRICKS_IN_ROUND; l++) {
+
+            std::vector<Card> cards_on_table;
+
+            int biggest_value = 0;
+            int winner = player;
+            char starter_suit;
+        
+            // 4 PLAYERS:
+            for (int i = 1; i <= CONNECTIONS; i++) {
+
+                // TRICK + od 0 do 3 wyłożonych kart (w kolejności), konwersja przez to_string
+                send_trick(clients[i].fd, l, cards_on_table);
+
+                std::string value;
+                char suit;
+                // recv_trick(l, &value, &suit);
+                // check();
+
+                cards_on_table.push_back(Card(value, suit));
+                round.hands[i].remove_card(value, suit);
+
+                if (i == 1) {
+                    // Save 
+                    starter_suit = suit; 
+                    biggest_value = map_value[value];
+                }
+                if (map_value[value] > biggest_value && suit == starter_suit) { // dla wychodzącego zawsze niespełnione
+                    biggest_value = map_value[value];
+                    winner = player;
+                }
+
+                // Cyclic incrementation, 0 is ommited to fit indices in clients' array:
+                player = (player == 4) ? 1 : (player + 1);
+            }
+
+            // Przyznaj punkty:
+            if (type == 1 || type == 7) {
+                clients[winner].round_points++;
+                clients[winner].total_points++;
+                points_left--;
+            }
+            if ((type == 6 || type == 7) && (l == 7 || l == 13)) {
+                clients[winner].round_points += 10;
+                clients[winner].total_points += 10;
+                points_left -= 10;
+            }
+
+            for (Card card : cards_on_table) {
+                std::string value = card.value;
+                char suit = card.suit;
+                int score = points.value_points[value] + points.suit_points[suit];
+                clients[winner].round_points += score;
+                clients[winner].total_points += score;
+                points_left -= score;
+                if ((type == 5 || type == 7) && value == "K" && suit == 'H') {
+                    clients[winner].round_points += 18;
+                    clients[winner].total_points += 18;
+                    points_left -= 18;
+                }
+            }
+
+            if (points_left == 0) {
+                // kończymy rozdanie, bo wszystkie punkty zostały już rozdysponowane:
+                break;
+            }
+
+        }
+
+        // broadcast_score();
+        // broadcast_total();
+
+        for (int i = 1; i <= CONNECTIONS; i++) {
+            clients[i].round_points = 0;
+        }
+
+    }
 
 }
 
@@ -1113,7 +1241,6 @@ int main(int argc, char** argv) {
     // Input data:
     std::string port_s = "0";
     std::string filename; 
-
     int timeout = 5000;
 
     // Runtime data:
@@ -1126,8 +1253,6 @@ int main(int argc, char** argv) {
     struct ClientInfo clients[POLL_SIZE]; // clients[0] is empty.
 
     Game game;
-    
-    // static char buffer[BUFFER_SIZE];
 
     // State:
     // size_t active_clients = 0; // now connections variable shadows this one
