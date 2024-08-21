@@ -1231,8 +1231,8 @@ void disconnect_client_in_game(struct pollfd* poll_fds, struct ClientInfo* clien
 /*
 ROZGRYWKA:
 Kolejne rozszerzenia:
-- poll() przy założeniu że wszyscy grają poprawnie i nikt się nie rozłącza
-- dodać założenie że gracze przysyłają błędne komunikaty
+- poll() przy założeniu że wszyscy grają poprawnie i nikt się nie rozłącza - zrobione
+- dodać założenie że gracze przysyłają błędne komunikaty (tylko odsyłamy WRONG) - zrobione
 - dodać założenie że gracze są rozłączani / sami się rozłączają i trzeba
   czekać na nowego gracza, który przyśle IAM
 */
@@ -1278,8 +1278,8 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                     }
 
                     // Reset revents in poll_fds:
-                    for (int i = 0; i < POLL_SIZE; i++) {
-                        poll_fds[i].revents = 0;
+                    for (int k = 0; k < POLL_SIZE; k++) {
+                        poll_fds[k].revents = 0;
                     }
 
                     // Poll:
@@ -1299,7 +1299,7 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                         if (poll_fds[0].revents & POLLIN) {
 
                             // TODO
-                            // jeśli są wszyscy gracze, to odeślij busy i olej
+                            // jeśli są wszyscy gracze, to odeślij BUSY i olej
                             // jeśli nie ma wszystkich graczy, to gra jest zawieszona i po nadejściu
                             // requesta akceptujemy gracza normalnie i wracamy
 
@@ -1327,7 +1327,7 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                                     // std::cerr << "empty readn: ending connection (id: " << i << ")\n";
                                 } else {
                                     // Coś odebrano - przetwarzamy wiadomość (wiadomość od dobrego gracza lub nie)
-                                    std::cout << "received " << received_bytes << " bytes within connection (id: " << i << ")\n";
+                                    std::cout << "received " << received_bytes << " bytes within connection (id: " << j << ")\n";
                                     std::cout << "parsing message: " << buffer << "\n";
 
                                     if (player == j) {
@@ -1495,11 +1495,16 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
             if (points_left == 0) {
                 break;
             }
+
+            // Gracz biorący lewę wychodzi jako pierwszy w następnej lewie:
+            player = winner;
         }
 
+        // Po rozdaniu wysyłamy SCORE i TOTAL:
         broadcast_score(clients);
         broadcast_total(clients);
 
+        // Czyścimy punktację z minionego rozdania, zachowujemy generalną:
         for (int i = 1; i <= CONNECTIONS; i++) {
             clients[i].round_points = 0;
         }
