@@ -48,6 +48,9 @@
 #define ROUND_TYPES 7
 #define TRICKS_IN_ROUND 13
 
+#define PENALTY_7_OR_13 10
+#define PENALTY_KH 18
+
 #define DEFAULT_PORT 0
 
 #define N 1
@@ -723,8 +726,8 @@ int parse_trick(const std::string& message, int trick_number,
             *suit = match[3].str()[0];
             return GOOD;
         } else {
-            std::cerr << "Wrong TRICK format\n";
-            return ERROR;
+            std::cerr << "Wrong trick number in parse_trick\n";
+            return 2;
         }
     } else {
         return ERROR;
@@ -1261,7 +1264,7 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
             // 4 PLAYERS:
             for (int i = 1; i <= CONNECTIONS; i++) { // i - dummy licznik, tylko do policzenia do czterech
 
-                int poll_timeout = TIMEOUT; // TODO: POMIAR CZASU DLA TRICKA
+                int poll_timeout = TIMEOUT;
                 bool received = false;
                 bool trick_to_send = true;
                 TimePoint last_send_time;
@@ -1331,7 +1334,8 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                                         // Dobry gracz - próbujemy parsować
                                         std::string value;
                                         char suit;
-                                        if (parse_trick(buffer, l, &value, &suit) == GOOD) {
+                                        int errcode = parse_trick(buffer, l, &value, &suit);
+                                        if (errcode == GOOD) {
                                             // Numer lewy się zgadza, sprawdzamy czy karta jest na ręce:
                                             if (round.hands[j].contains(value, suit)) {
                                                 // Jeśli gracz zaczyna lewę, to przyjmujemy:
@@ -1341,7 +1345,7 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                                                     biggest_value = map_value[value];
 
                                                     cards_on_table.push_back(Card(value, suit));
-                                                    round.hands[i].remove_card(value, suit);
+                                                    round.hands[j].remove_card(value, suit);
                                                     
                                                     // ACCEPT: Cyclic incrementation, 0 is ommited to fit indices in clients' array:
                                                     player = (player == 4) ? 1 : (player + 1);
@@ -1352,7 +1356,7 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                                                     
                                                     // Jeśli spełnia, to akceptujemy kartę
                                                     cards_on_table.push_back(Card(value, suit));
-                                                    round.hands[i].remove_card(value, suit);
+                                                    round.hands[j].remove_card(value, suit);
                                                     
                                                     if (map_value[value] > biggest_value && suit == starter_suit) {
                                                         biggest_value = map_value[value];
@@ -1375,7 +1379,7 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                                                     if (poverty) {
                                                         // Jeśli faktycznie ma biedę, to dorzucamy kartę na stół
                                                         cards_on_table.push_back(Card(value, suit));
-                                                        round.hands[i].remove_card(value, suit);
+                                                        round.hands[j].remove_card(value, suit);
                                                         // ...ale nie uwzględniamy jej w punktacji.
 
                                                         // Cyclic incrementation, 0 is ommited to fit indices in clients' array:
@@ -1383,36 +1387,56 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                                                         received = true;
                                                     } else {
                                                         // Jeśli nas okłamał, to wysyłamy wrong
-                                                        // wysyłamy wrong
+                                                        send_wrong(poll_fds[j].fd, l);
                                                     }
-                                                } else {
-                                                    // blok pro-forma, możemy wysłać wrong
                                                 }
                                             } else {
                                                 // Karty nie ma na ręce, wysyłamy wrong
+                                                std::cerr << "Player doesn't have this card\n";
+                                                send_wrong(poll_fds[j].fd, l);
                                             }
+                                        } else if (errcode == 2) {
+                                            // Wiadomość się parsuje, ale numer lewy jest zły - WRONG
+                                            std::cerr << "Incorrect trick number\n";
+                                            send_wrong(poll_fds[j].fd, l);
                                         } else {
-                                            // Wiadomość się nie parsuje, wysyłamy wrong
+                                            // Wiadomość się nie parsuje, NIE WYSYŁAMY WRONG
+                                            // ROZŁĄCZ W TRAKCIE GRY
+                                            // disconnect_client(poll_fds, clients, &active_clients, j);
+                                            // std::cerr << "empty readn: ending connection (id: " << i << ")\n";
                                         }
                                     } else {
-                                        // Zły gracz - odsyłamy WRONG
+                                        // Zły gracz wysyła wiadomość nieproszony - sprawdzamy czy wysłał TRICK
+                                        std::string value;
+                                        char suit;
+                                        int errcode = parse_trick(buffer, l, &value, &suit);
+                                        if (errcode == GOOD || errcode == 2) {
+                                            // Parsuje się, odsyłamy WRONG
+                                            std::cerr << "TRICK received from incorrect player\n";
+                                            send_wrong(poll_fds[j].fd, l);
+                                        } else {
+                                            // Nie parsuje się - błędny komunikat
+                                            // ROZŁĄCZ W TRAKCIE GRY
+                                            // disconnect_client(poll_fds, clients, &active_clients, j);
+                                            // std::cerr << "empty readn: ending connection (id: " << i << ")\n";
+                                        }
                                     }
                                 }
                             }
                             // POLLHUP <=> client disconnected by server - in case of some weird behaviour.
-                            else if (poll_fds[i].fd != -1 && (poll_fds[i].revents & POLLHUP)) {
+                            else if (poll_fds[j].fd != -1 && (poll_fds[j].revents & POLLHUP)) {
                                 // ROZŁĄCZ W TRAKCIE GRY
                                 // disconnect_client(poll_fds, clients, &active_clients, &ready, i);
                                 // std::cerr << "client " << i << " disconnected - waiting to reconnect\n";
                             }
                             // POLLERR <=> client's error.
-                            else if (poll_fds[i].fd != -1 && (poll_fds[i].revents & POLLERR)) {
+                            else if (poll_fds[j].fd != -1 && (poll_fds[j].revents & POLLERR)) {
                                 // ROZŁĄCZ W TRAKCIE GRY
                                 // disconnect_client(poll_fds, clients, &active_clients, &ready, i);
                                 // std::cerr << "client " << i << " got an error - disconnected\n";
                             }
                             // POLLNVAL <=> wrong descriptor.
-                            else if (poll_fds[i].fd != -1 && (poll_fds[i].revents & POLLNVAL)) {
+                            else if (poll_fds[j].fd != -1 && (poll_fds[j].revents & POLLNVAL)) {
                                 // ROZŁĄCZ W TRAKCIE GRY
                                 // disconnect_client(poll_fds, clients, &active_clients, &ready, i);
                                 // std::cerr << "error in poll_fds array: descriptor " << i << "is wrong\n";
@@ -1423,27 +1447,22 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                         std::cout << "timeout...\n";
                     }
 
-                    // calculate_remaining_time(poll_fds, clients, timeout, &poll_timeout, &active_clients, &ready);
+                    // Policz czas, który pozostał graczowi na przesłanie TRICKa:
+
+                    poll_timeout = TIMEOUT;
+                    auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - last_send_time).count();
+                    int time_left = timeout - elapsed_time;
+                    std::cout << "time left for client " << player << ": " << time_left << "\n";
+
+                    if (time_left <= 0) {
+                        trick_to_send = true;
+                    }
+                    else if (time_left > 0 && time_left < poll_timeout) {
+                        poll_timeout = time_left;
+                    }
 
                 } while (!received);
                 
-                /*
-                cards_on_table.push_back(Card(value, suit));
-                round.hands[i].remove_card(value, suit);
-                
-                if (i == 1) {
-                    // Save 
-                    starter_suit = suit; 
-                    biggest_value = map_value[value];
-                }
-                if (map_value[value] > biggest_value && suit == starter_suit) { // dla wychodzącego zawsze niespełnione
-                    biggest_value = map_value[value];
-                    winner = player;
-                }
-
-                // Cyclic incrementation, 0 is ommited to fit indices in clients' array:
-                player = (player == 4) ? 1 : (player + 1);
-                */
             }
 
             // Przyznaj punkty:
@@ -1453,9 +1472,9 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                 points_left--;
             }
             if ((type == 6 || type == 7) && (l == 7 || l == 13)) {
-                clients[winner].round_points += 10;
-                clients[winner].total_points += 10;
-                points_left -= 10;
+                clients[winner].round_points += PENALTY_7_OR_13;
+                clients[winner].total_points += PENALTY_7_OR_13;
+                points_left -= PENALTY_7_OR_13;
             }
 
             for (Card card : cards_on_table) {
@@ -1466,9 +1485,9 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                 clients[winner].total_points += score;
                 points_left -= score;
                 if ((type == 5 || type == 7) && value == "K" && suit == 'H') {
-                    clients[winner].round_points += 18;
-                    clients[winner].total_points += 18;
-                    points_left -= 18;
+                    clients[winner].round_points += PENALTY_KH;
+                    clients[winner].total_points += PENALTY_KH;
+                    points_left -= PENALTY_KH;
                 }
             }
 
@@ -1557,7 +1576,7 @@ int main(int argc, char** argv) {
         std::cerr << "Error: " << ex.what() << std::endl;
     }
 
-    // close_server();
-    return GOOD;
     */
+    // close_server(); TODO!!
+    return GOOD;
 }
