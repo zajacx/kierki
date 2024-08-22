@@ -62,7 +62,7 @@
 #define OUTPUT 6
 */
 
-// ---------------------- Declarations & Data Structures ----------------------
+// --------------------------- Declarations & Data Structures ---------------------------
 
 // Buffer to use in writen, each buffer for readn is local.
 // static char buffer[BUFFER_SIZE];
@@ -222,7 +222,7 @@ struct Game {
     }
 };
 
-// -------------------------- Functions for structs --------------------------
+// ------------------------------- Functions for structs --------------------------------
 
 // Card parser.
 Card parse_card(const std::string& hand_str, size_t& pos, bool* fmt_ok) {
@@ -310,7 +310,8 @@ Game parse_game_file(const std::string& filename) {
     return game;
 }
 
-// ------------------------------ Initialization ------------------------------
+
+// ----------------------------------- Initialization -----------------------------------
 
 // Sets variables describing input options.
 int set_input_variables(int argc, char** argv, std::string* port,
@@ -475,9 +476,10 @@ void initialize_main_socket(int* socket_fd, std::string port_s, uint16_t* port,
     std::cout << "listening on port: " << *port << "\n";
 }
 
-// ------------------------------- Connection -------------------------------
 
-// Initializes file descriptors' array (of size POLL_SIZE) to use in poll().
+// ------------------------------------- Connection -------------------------------------
+
+// Initializes descriptors' array (of size POLL_SIZE) to use in poll().
 void initialize_descriptors(struct pollfd* poll_fds, int socket_fd) {
     for (int i = 0; i < POLL_SIZE; i++) {
         poll_fds[i].fd = -1;
@@ -623,6 +625,7 @@ void disconnect_client(struct pollfd* poll_fds, struct ClientInfo* clients,
 }
 
 // Checks poll status and throws an exception in case of an error.
+// COMMON
 void check_poll_error(int poll_status) {
     if (poll_status < 0) {
         if (errno == EINTR) {
@@ -661,7 +664,8 @@ void calculate_remaining_time(struct pollfd* poll_fds, struct ClientInfo* client
     *poll_timeout = min_timeout;
 }
 
-// --------------------------- Receiving messages ---------------------------
+
+// --------------------------------- Receiving messages ---------------------------------
 
 // Reads from given descriptor until it finds "\r\n" sequence.
 // Writes read sequence to an external buffer ext_buffer
@@ -695,9 +699,9 @@ int read_to_newline(int descriptor, std::string* result) {
 }
 
 
-// ---------------------------- Parsing messages -------------------------------
-// |   All parsers return 0 if a message is parsed correctly, 1 if it's not.   |
-// -----------------------------------------------------------------------------
+// -------------------------------- Parsing messages ------------------------------------
+// |       All parsers return 0 if a message is parsed correctly, 1 if it's not.        |
+// --------------------------------------------------------------------------------------
 
 // Parser for a message of type: IAM<place>\r\n.
 int parse_iam(const std::string& message, char* result) {
@@ -734,42 +738,8 @@ int parse_trick(const std::string& message, int trick_number,
     }
 }
 
-/*
-void test_parse_trick() {
-    // Correct:
-    int trick_number;
-    std::string value;
-    char suit;
-    assert(parse_trick("TRICK15H\r\n", &trick_number, &value, &suit) == 0);
-    assert(trick_number == 1);
-    assert(value == "5");
-    assert(suit == 'H');
-    assert(parse_trick("TRICK125H\r\n", &trick_number, &value, &suit) == 0);
-    assert(trick_number == 12);
-    assert(value == "5");
-    assert(suit == 'H');
-    assert(parse_trick("TRICK110H\r\n", &trick_number, &value, &suit) == 0);
-    assert(trick_number == 1);
-    assert(value == "10");
-    assert(suit == 'H');
-    assert(parse_trick("TRICK1310H\r\n", &trick_number, &value, &suit) == 0);
-    assert(trick_number == 13);
-    assert(value == "10");
-    assert(suit == 'H');
-    assert(parse_trick("TRICK5KS\r\n", &trick_number, &value, &suit) == 0);
-    assert(trick_number == 5);
-    assert(value == "K");
-    assert(suit == 'S');
-    // Wrong:
-    assert(parse_trick("aTRICK5KS\r\n", &trick_number, &value, &suit) == 1);
-    assert(parse_trick("TRICK0KS\r\n", &trick_number, &value, &suit) == 1);
-    assert(parse_trick("TRICKS\r\n", &trick_number, &value, &suit) == 1);
-    assert(parse_trick("TRICK500S\r\n", &trick_number, &value, &suit) == 1);
-    assert(parse_trick("TRICK59M\r\n", &trick_number, &value, &suit) == 1);
-}
-*/
 
-// -------------------------------- Test prints --------------------------------
+// ------------------------------------ Test prints -------------------------------------
 
 // TEST: Prints whole poll_fds array.
 void print_poll_fds(struct pollfd* poll_fds) {
@@ -815,7 +785,7 @@ void print_clients(struct ClientInfo* clients) {
 // tutaj będzie wysyłanie wiadomości
 
 
-// ------------------------------ Event handlers --------------------------------
+// ---------------------------------- Event handlers ------------------------------------
 
 // Handles an event (client's connection request) on main descriptor.
 void handle_new_client_request(int* active_clients, struct pollfd* poll_fds, struct ClientInfo* clients) {
@@ -1005,7 +975,7 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
 }
 
 
-// ---------------------------- Sending messages ----------------------------
+// ---------------------------------- Sending messages ----------------------------------
 
 /*
 // Sends BUSY<place list> message to the client.
@@ -1134,7 +1104,7 @@ void send_total(int socket_fd, struct ClientInfo* clients) {
 }
 
 
-// ----------------------- Broadcast helper functions -----------------------
+// ------------------------------- Broadcasting messages --------------------------------
 
 // Calls send_deal() for each player.
 void broadcast_deal(struct ClientInfo* clients, int round_type, 
@@ -1159,7 +1129,7 @@ void broadcast_total(struct ClientInfo* clients) {
 }
 
 
-// ---------------------------------- Game ----------------------------------
+// ---------------------------------------- Game ----------------------------------------
 
 /*
 struct ClientInfo {

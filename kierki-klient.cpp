@@ -1,28 +1,35 @@
 #include <iostream>
-#include <stdexcept>
-#include <string>
-#include <cstring>
-#include <limits>
-#include <unistd.h>
-#include <inttypes.h>
-#include <stdio.h>
-#include <string.h>
-#include <arpa/inet.h>
-#include <sys/types.h>
-#include <sys/socket.h>
-#include <assert.h>
-#include <errno.h>
-#include <regex>
-#include <set>
-#include <limits.h>
-#include <netdb.h>
-#include <stddef.h>
-#include <stdlib.h>
-#include <signal.h>
-
+#include <chrono>
 #include <climits>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
+#include <fstream>
+#include <limits>
+#include <map>
+#include <regex>
+#include <set>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include <arpa/inet.h>
+#include <assert.h>
+#include <errno.h>
+#include <inttypes.h>
+#include <limits.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <signal.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include "common.h"
 #include "kierki-common.h"
@@ -31,6 +38,9 @@
 #define ERROR 1
 
 #define HAND 13
+
+#define BUFFER_SIZE 500
+#define TIMEOUT 500
 
 // ---------------------- Declarations -----------------------
 
@@ -657,219 +667,78 @@ int parse_total(const std::string& message, int* scores) {
     }
 }
 
-// ----------------------------- Tests -------------------------------
-
-void test_parse_busy() {
-    std::vector<char> busy_places;
-    // Correct:
-    assert(parse_busy("BUSYN\r\n", busy_places) == 0);
-    for (char c : busy_places) {
-        std::cout << c << " "; 
+// Checks poll status and throws an exception in case of an error.
+// COMMON
+void check_poll_error(int poll_status) {
+    if (poll_status < 0) {
+        if (errno == EINTR) {
+            throw std::runtime_error("interrupted system call");
+        }
+        else {
+            throw std::runtime_error("poll");
+        }
     }
-    std::cout << "\n";
-    busy_places.clear();
-    assert(parse_busy("BUSYS\r\n", busy_places) == 0);
-    for (char c : busy_places) {
-        std::cout << c << " "; 
-    }
-    std::cout << "\n";
-    busy_places.clear();
-    assert(parse_busy("BUSYNES\r\n", busy_places) == 0);
-    for (char c : busy_places) {
-        std::cout << c << " "; 
-    }
-    std::cout << "\n";
-    busy_places.clear();
-    assert(parse_busy("BUSYNWES\r\n", busy_places) == 0);
-    for (char c : busy_places) {
-        std::cout << c << " "; 
-    }
-    std::cout << "\n";
-    busy_places.clear();
-    assert(parse_busy("BUSYWE\r\n", busy_places) == 0);
-    for (char c : busy_places) {
-        std::cout << c << " "; 
-    }
-    std::cout << "\n";
-    busy_places.clear();
-    // Wrong:
-    assert(parse_busy("BUSY\r\n", busy_places) == 1);
-    busy_places.clear();
-    assert(parse_busy("BUS", busy_places) == 1);
-    busy_places.clear();
-    assert(parse_busy("BUSY\n", busy_places) == 1);
-    busy_places.clear();
-    assert(parse_busy("BUSYNESENSE\r\n", busy_places) == 1);
-    busy_places.clear();
-    assert(parse_busy("BUSYWXD\r\n", busy_places) == 1);
-    busy_places.clear();
-    assert(parse_busy("BUSYN\r", busy_places) == 1);
 }
 
-void test_parse_deal() {
-    int round_type;
-    char starting_player;
-    Hand hand;
-    // CORRECT:
-    assert(parse_deal("DEAL3W2D3D4D5D6D7D8D9D10DJDQDKDAD\r\n", &round_type, &starting_player, hand) == 0);
-    std::cout << "Round Type: " << round_type << std::endl;
-    std::cout << "Starting Player: " << starting_player << std::endl;
-    std::cout << "Hand Cards: ";
-    for (const auto& card : hand.cards) {
-        std::cout << card.value << card.suit << " ";
+
+// to może być w sumie int, żeby stwierdzić czy wywoływać w ogóle play_game()
+// 0 - przyszedł deal
+// 1 - przyszedł busy
+// 2 - ewentualny inny błąd
+bool recv_busy_or_deal(int socket_fd, struct pollfd* poll_fds) {
+    // tutaj musi być poll i oczekiwanie na deskryptorze na odebranie wiadomości
+    // od serwera ale też responsywność jeśli chodzi o użytkownika
+    
+
+    char buffer[BUFFER_SIZE];
+
+    while (true) {
+        
+        poll_fds[0].revents = 0;
+        poll_fds[1].revents = 0;
+
+        int poll_status = poll(poll_fds, 2, TIMEOUT);
+        check_poll_error(poll_status);
+
+        if (poll_status > 0) {
+            // Message from server:
+            if (poll_fds[0].revents & POLLIN) {
+                // tutaj handlujemy wiadomości od serwera
+                // handle_init_server_message();
+                // jeśli dostaniemy dobre, to break.
+            }
+            // Data from user:
+            if (poll_fds[1].revents & POLLIN) {
+                // tutaj handlujemy wiadomośći od użytkownika
+                // handle_init_user_message();
+            }
+        }
+        else {
+            std::cout << "timeout...\n";
+        }
     }
-    std::cout << std::endl;
-    assert(parse_deal("DEAL1N2C2S5H4S6D10D8H7SKCAHASJCQD\r\n", &round_type, &starting_player, hand) == 0);
-    std::cout << "Round Type: " << round_type << std::endl;
-    std::cout << "Starting Player: " << starting_player << std::endl;
-    std::cout << "Hand Cards: ";
-    for (const auto& card : hand.cards) {
-        std::cout << card.value << card.suit << " ";
-    }
-    std::cout << std::endl;
-    assert(parse_deal("DEAL7SJCQDKHAS2D3C4S5H6H7H8S9C10D\r\n", &round_type, &starting_player, hand) == 0);
-    std::cout << "Round Type: " << round_type << std::endl;
-    std::cout << "Starting Player: " << starting_player << std::endl;
-    std::cout << "Hand Cards: ";
-    for (const auto& card : hand.cards) {
-        std::cout << card.value << card.suit << " ";
-    }
-    std::cout << std::endl;
-    // WRONG:
-    assert(parse_deal("DEAL3N2C3D4H5S6C7D8H10CKDQHAKS\r\n", &round_type, &starting_player, hand) == 1);
-    assert(parse_deal("DEAL3N2C3D4H5S6C7D8M9S10CKDQHAKS\r\n", &round_type, &starting_player, hand) == 1);
-    assert(parse_deal("DEAL3N2C3D4H5S6C7D8H5C9S10CKDQHAKS\r\n", &round_type, &starting_player, hand) == 1);
-    assert(parse_deal("aDEAL3N2C3D4H5S6C7D8H9S10CKDQHAKS\r\n", &round_type, &starting_player, hand) == 1);
-    assert(parse_deal("DEAL3N2C3D4H5S6C7D8H9S10CKDQHAKS\r\n", &round_type, &starting_player, hand) == 1);
+
+    bool received = false;
+    do {
+        // tutaj czekamy aż odbierzemy coś od serwera
+    } while (!received);
 }
 
-void test_parse_trick() {
-    // Correct:
-    int trick_number;
-    std::vector<Card> on_table;
-    assert(parse_trick("TRICK15H3H4H\r\n", &trick_number, on_table, true) == 0);
-    std::cout << "trick number: " << trick_number << "\n";
-    for (Card card : on_table) {
-        std::cout << card.value << card.suit << " ";
-    }
-    std::cout << "\n";
-    assert(parse_trick("TRICK1\r\n", &trick_number, on_table, true) == 0);
-    std::cout << "trick number: " << trick_number << "\n";
-    for (Card card : on_table) {
-        std::cout << card.value << card.suit << " ";
-    }
-    std::cout << "\n";
-    assert(parse_trick("TRICK12H\r\n", &trick_number, on_table, true) == 0);
-    std::cout << "trick number: " << trick_number << "\n";
-    for (Card card : on_table) {
-        std::cout << card.value << card.suit << " ";
-    }
-    std::cout << "\n";
-    assert(parse_trick("TRICK12H3H\r\n", &trick_number, on_table, true) == 0);
-    std::cout << "trick number: " << trick_number << "\n";
-    for (Card card : on_table) {
-        std::cout << card.value << card.suit << " ";
-    }
-    std::cout << "\n";
-    assert(parse_trick("TRICK\r\n", &trick_number, on_table, false) == 1);
-    // Wrong:
-    assert(parse_trick("aTRICK5KS\r\n", &trick_number, on_table, false) == 1);
-    assert(parse_trick("TRICK0KS\r\n", &trick_number, on_table, false) == 1);
-    assert(parse_trick("TRICKS\r\n", &trick_number, on_table, false) == 1);
-    assert(parse_trick("TRICK500S\r\n", &trick_number, on_table, false) == 1);
-    assert(parse_trick("TRICK59M\r\n", &trick_number, on_table, false) == 1);
+// prowadzi grę
+void play_game() {
+
 }
 
-void test_parse_wrong() {
-    // Correct:
-    int trick_number;
-    assert(parse_wrong("WRONG1\r\n", &trick_number) == 0);
-    assert(parse_wrong("WRONG2\r\n", &trick_number) == 0);
-    assert(parse_wrong("WRONG3\r\n", &trick_number) == 0);
-    assert(parse_wrong("WRONG4\r\n", &trick_number) == 0);
-    assert(parse_wrong("WRONG10\r\n", &trick_number) == 0);
-    assert(parse_wrong("WRONG12\r\n", &trick_number) == 0);
-    assert(parse_wrong("WRONG13\r\n", &trick_number) == 0);
-    // Wrong:
-    assert(parse_wrong("WRONG0\r\n", &trick_number) == 1);
-    assert(parse_wrong("WRON\r\n", &trick_number) == 1);
-    assert(parse_wrong("aWRONG12\r\n", &trick_number) == 1);
-    assert(parse_wrong("WRONG14\r\n", &trick_number) == 1);
+// Initializes descriptors' array to use in poll().
+void initialize_descriptors(struct pollfd* poll_fds, int socket_fd) {
+    poll_fds[0].fd = socket_fd;
+    poll_fds[0].events = POLLIN;
+    poll_fds[1].fd = STDIN_FILENO;
+    poll_fds[1].events = POLLIN;
 }
 
-void test_parse_taken() {
-    // Correct:
-    int trick_number;
-    char taken_by;
-    std::vector<Card> cards;
-    assert(parse_taken("TAKEN15H3H4H9HS\r\n", &trick_number, cards, &taken_by, true) == 0);
-    std::cout << "trick_number: " << trick_number << "\n";
-    std::cout << "taken_by: " << taken_by << "\n";
-    std::cout << "cards: ";
-    for (Card card : cards) {
-        std::cout << card.value << card.suit << " ";
-    }
-    std::cout << "\n";
-    assert(parse_taken("TAKEN124C10CKCACN\r\n", &trick_number, cards, &taken_by, false) == 0);
-    std::cout << "trick_number: " << trick_number << "\n";
-    std::cout << "taken_by: " << taken_by << "\n";
-    std::cout << "cards: ";
-    for (Card card : cards) {
-        std::cout << card.value << card.suit << " ";
-    }
-    std::cout << "\n";
-    assert(parse_taken("TAKEN105C6D7H10SS\r\n", &trick_number, cards, &taken_by, false) == 0);
-    std::cout << "trick_number: " << trick_number << "\n";
-    std::cout << "taken_by: " << taken_by << "\n";
-    std::cout << "cards: ";
-    for (Card card : cards) {
-        std::cout << card.value << card.suit << " ";
-    }
-    std::cout << "\n";
-    assert(parse_taken("TAKEN12H3H4H5HW\r\n", &trick_number, cards, &taken_by, true) == 0);
-    std::cout << "trick_number: " << trick_number << "\n";
-    std::cout << "taken_by: " << taken_by << "\n";
-    std::cout << "cards: ";
-    for (Card card : cards) {
-        std::cout << card.value << card.suit << " ";
-    }
-    std::cout << "\n";
-    // Wrong:
-    assert(parse_taken("TAKEN\r\n", &trick_number, cards, &taken_by, false) == 1);
-    assert(parse_taken("TAKEN47H8H9H10HN\n", &trick_number, cards, &taken_by, false) == 1);
-    assert(parse_taken("aTAKEN15H3H4H9HS\r\n", &trick_number, cards, &taken_by, false) == 1);
-    assert(parse_taken("TAKEN10HKDAHQDE\r\n", &trick_number, cards, &taken_by, false) == 1);
-}
 
-void test_parse_score() {
-    int scores[5];
-    // Correct:
-    assert(parse_score("SCOREN35E22S41W17\r\n", scores) == 0);
-    std::cout << "TEST 1:\n";
-    for (int i = 1; i <= 4; i++) {
-        std::cout << scores[i] << " ";
-    }
-    std::cout << "\n";
-    assert(parse_score("SCOREW0E12345S0N17\r\n", scores) == 0);
-    std::cout << "TEST 2:\n";
-    for (int i = 1; i <= 4; i++) {
-        std::cout << scores[i] << " ";
-    }
-    std::cout << "\n";
-    assert(parse_score("SCOREN2E2222S41W0\r\n", scores) == 0);
-    std::cout << "TEST 3:\n";
-    for (int i = 1; i <= 4; i++) {
-        std::cout << scores[i] << " ";
-    }
-    std::cout << "\n";
-    // Wrong:
-    assert(parse_score("aSCOREN2E2222S41W0\r\n", scores) == 1);
-    assert(parse_score("SCOREN2N2222S41W0\r\n", scores) == 1);
-    assert(parse_score("SCOREN2E2222S41W0\n", scores) == 1);
-    assert(parse_score("SCORENE2222S41W2\r\n", scores) == 1);
-    assert(parse_score("SCOREN2E2222N41W0\r\n", scores) == 1);
-}
-
+    
 
 // ----------------------------- Main -------------------------------
 
@@ -888,37 +757,31 @@ int main(int argc, char** argv) {
     //struct sockaddr_in6 server_address;
     struct sockaddr_storage server_address;
     int socket_fd;
+    struct pollfd poll_fds[2];
 
     // State:
     bool connected = false;
 
-    /*
     try {
         // Client initialization:
         parse_arguments(argc, argv, &host, &port_s, &place, &ipv4, &ipv6, &robot);
         print_options_info(host, port_s, place, ipv4, ipv6, robot); // TEST
+        initialize_descriptors(poll_fds, socket_fd);
         connect_to_server(port_s, &port, host, ipv4, ipv6, &server_address,
                           &socket_fd, &connected, &family);
         send_iam(place, socket_fd);
-        // Game:
-
-
-        // tutaj można odebrać albo BUSY albo DEAL
-
-        while (true) {
-
+        /*
+        if (recv_busy_or_deal()) { // rozpoznanie czy w ogóle jesteśmy dopuszczeni do gry
+            play_game();
         }
-
-        // pętla serwera
-
+        */
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         disconnect_from_server(&connected, socket_fd);
         return ERROR;
     }
-    */
     
-    
+    /*
     // Test parserów:
     try {
         test_parse_score();
@@ -928,6 +791,7 @@ int main(int argc, char** argv) {
         // disconnect_from_server(&connected, socket_fd);
         return ERROR;
     }
+    */
     
 
     // disconnect_from_server(&connected, socket_fd);
