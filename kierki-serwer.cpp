@@ -920,6 +920,14 @@ void broadcast_deal(struct ClientInfo* clients, int round_type,
     }
 }
 
+// Calls send_taken() for each player.
+void broadcast_taken(struct ClientInfo* clients, int trick_number,
+                     std::vector<Card> cards_on_table, int winner) {
+    for (int i = 1; i <= 4; i++) {
+        send_taken(clients[i].fd, trick_number, cards_on_table, winner);
+    }
+}
+
 // Calls send_score() for each player.
 void broadcast_score(struct ClientInfo* clients) {
     for (int i = 1; i <= 4; i++) {
@@ -1423,6 +1431,8 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                 
             }
 
+            broadcast_taken(clients, l, cards_on_table, winner);
+
             // Przyznaj punkty:
             if (type == 1 || type == 7) {
                 clients[winner].round_points++;
@@ -1459,8 +1469,8 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
         }
 
         // Po rozdaniu wysyłamy SCORE i TOTAL:
-        broadcast_score(clients);
-        broadcast_total(clients);
+        // broadcast_score(clients);
+        // broadcast_total(clients);
 
         // Czyścimy punktację z minionego rozdania, zachowujemy generalną:
         for (int i = 1; i <= CONNECTIONS; i++) {

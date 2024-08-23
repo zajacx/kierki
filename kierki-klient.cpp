@@ -533,10 +533,10 @@ int parse_deal(const std::string& message, int* round_type,
 
 // Parser for a message of type: TRICK<trick number><card list>\r\n.
 int parse_trick(const std::string& message, int* trick_number,
-                std::vector<Card>& on_table, bool round_one) {
+                std::vector<Card>& on_table, bool trick_one) {
     
     std::regex pattern;
-    if (round_one) {
+    if (trick_one) {
         pattern = R"(TRICK(1)(.*)\r\n)";
     } else {
         pattern = R"(TRICK([2-9]|1[0-3])(.*)\r\n)";
@@ -588,11 +588,12 @@ int parse_wrong(const std::string& message, int* trick_number) {
 
 // Parser for a message of type: TAKEN<trick number><card list><player taking cards>\r\n.
 int parse_taken(const std::string& message, int* trick_number,
-                std::vector<Card>& cards, char* taken_by, bool round_one) {
+                std::vector<Card>& cards, char* taken_by, bool trick_one) {
     
     std::regex pattern;
-    if (round_one) {
+    if (trick_one) {
         pattern = R"(TAKEN(1)(.+)([NESW])\r\n)";
+        std::cout << "parse_taken: trick one\n";
     } else {
         pattern = R"(TAKEN(1[0-3]|[2-9])(.+)([NESW])\r\n)";
     }
@@ -749,6 +750,8 @@ void send_trick(int socket_fd, struct pollfd* poll_fds, Hand& hand, int trick_nu
 
     message += "\r\n";
 
+    std::cout << "sent TRICK" << trick_number << value << suit << "\n";
+
     ssize_t written_bytes = writen(socket_fd, message.c_str(), message.length());
     if (written_bytes <= 0) {
         throw std::runtime_error("writen (trick)");
@@ -867,7 +870,7 @@ void recv_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, char* st
                     throw std::runtime_error("server closed the connection\n");
                 } else {
                     // coś odebrano - próbujemy parsować DEAL
-                    if (parse_deal(buffer, round_type, starting_player, hand)) {
+                    if (parse_deal(buffer, round_type, starting_player, hand) == GOOD) {
                         std::cout << "received deal\n";
                         received = true;
                         break;
@@ -898,7 +901,7 @@ void recv_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, char* st
 }
 
 
-void recv_trick(int socket_fd, struct pollfd* poll_fds, char* suit, bool trick_zero) {
+void recv_trick(int socket_fd, struct pollfd* poll_fds, char* suit, bool trick_one) {
 
     bool received = false;
 
@@ -927,7 +930,7 @@ void recv_trick(int socket_fd, struct pollfd* poll_fds, char* suit, bool trick_z
                     // coś odebrano - próbujemy parsować TRICK
                     int trick_number;
                     std::vector<Card> on_table;
-                    if (parse_trick(buffer, &trick_number, on_table, trick_zero)) {
+                    if (parse_trick(buffer, &trick_number, on_table, trick_one) == GOOD) {
                         std::cout << "received trick\n";
                         if (on_table.size() != 0) {
                             *suit = on_table[0].suit;
@@ -961,7 +964,7 @@ void recv_trick(int socket_fd, struct pollfd* poll_fds, char* suit, bool trick_z
 }
 
 
-void recv_taken_or_wrong(int socket_fd, struct pollfd* poll_fds, bool* accepted, bool trick_zero) {
+void recv_taken_or_wrong(int socket_fd, struct pollfd* poll_fds, bool* accepted, bool trick_one) {
 
     bool received = false;
 
@@ -991,13 +994,13 @@ void recv_taken_or_wrong(int socket_fd, struct pollfd* poll_fds, bool* accepted,
                     int trick_number;
                     std::vector<Card> cards_taken;  // TODO: określić czy wypychać te parametry na zewnątrz
                     char taken_by;
-                    if (parse_taken(buffer, &trick_number, cards_taken, &taken_by, trick_zero)) {
+                    if (parse_taken(buffer, &trick_number, cards_taken, &taken_by, trick_one) == GOOD) {
                         std::cout << "trick " << trick_number << " taken by " << taken_by << "\n";
                         received = true;
                         *accepted = true;
                         break;
                     }
-                    else if (parse_wrong(buffer, &trick_number)) {
+                    else if (parse_wrong(buffer, &trick_number) == GOOD) {
                         std::cerr << "received wrong (trick: " << trick_number << "), sending card again\n";
                         received = true;
                         break;
@@ -1035,11 +1038,11 @@ void play_game(int socket_fd, struct pollfd* poll_fds, int s_round_type, char s_
     int round_type = s_round_type;
     char starting_player = s_starting_player;
     
-    int trick_number = 0;
+    int round_number = 0;
 
     while (true) {
         // początek rozdania, odbierz DEAL:
-        if (trick_number != 0) {
+        if (round_number != 0) {
             hand.cards.clear();
             recv_deal(socket_fd, poll_fds, &round_type, &starting_player, hand);
         }
@@ -1047,16 +1050,17 @@ void play_game(int socket_fd, struct pollfd* poll_fds, int s_round_type, char s_
         for (int l = 1; l <= TRICKS_IN_ROUND; l++) {
             bool accepted = false;
             char suit = 'X';
-            recv_trick(socket_fd, poll_fds, &suit, (trick_number == 0));
+            recv_trick(socket_fd, poll_fds, &suit, (l == 1));
             do {
+                sleep(1); // test
                 // Try sending TRICK:
-                send_trick(socket_fd, poll_fds, hand, trick_number, suit);
-                recv_taken_or_wrong(socket_fd, poll_fds, &accepted, (trick_number == 0)); 
+                send_trick(socket_fd, poll_fds, hand, l, suit);
+                recv_taken_or_wrong(socket_fd, poll_fds, &accepted, (l == 1)); 
             } while (!accepted);
         }
         // recv_score();
         // recv_total();
-        trick_number++;
+        round_number++;
 
         // test:
         std::cout << "game finished\n";
@@ -1112,7 +1116,14 @@ int main(int argc, char** argv) {
         
         // Determine if we are accepted to join the game:
         if (recv_busy_or_deal(socket_fd, poll_fds, &round_type, &starting_player, hand)) {
-            std::cout << "received deal, joining the game\n";
+            std::cout << "received deal, round parameters\n";
+            std::cout << "round type: " << round_type << "\n";
+            std::cout << "starting player: " << starting_player << "\n";
+            std::cout << "cards in hand: ";
+            for (Card card : hand.cards) {
+                std::cout << card.value << card.suit << " ";
+            }
+            std::cout << "\n";
             play_game(socket_fd, poll_fds, round_type, starting_player, hand);
         } else {
             std::cout << "received busy, disconnecting\n";
