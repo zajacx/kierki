@@ -181,7 +181,7 @@ struct Card {
     }
 
     std::string to_string() {
-        return value + suit;
+        return value + std::string(1, suit);
     }
 };
 
@@ -790,10 +790,10 @@ void send_busy(int socket_fd, bool* is_place_occupied) {
     
     std::string message = "BUSY";
     
-    if (is_place_occupied[N]) message += 'N';
-    if (is_place_occupied[E]) message += 'E';
-    if (is_place_occupied[S]) message += 'S';
-    if (is_place_occupied[W]) message += 'W';
+    if (is_place_occupied[N]) message += std::string(1, 'N');
+    if (is_place_occupied[E]) message += std::string(1, 'E');
+    if (is_place_occupied[S]) message += std::string(1, 'S');
+    if (is_place_occupied[W]) message += std::string(1, 'W');
     
     message += "\r\n";
     
@@ -809,8 +809,8 @@ void send_deal(int socket_fd, int round_type, char starting_player, std::string 
 
     std::string message = "DEAL";
 
-    message += '0' + round_type;
-    message += starting_player;
+    message += std::string(1, ('0' + round_type));
+    message += std::string(1, starting_player);
     message += card_string;
 
     message += "\r\n";
@@ -863,7 +863,7 @@ void send_taken(int socket_fd, int trick_number, std::vector<Card>& cards_on_tab
     for (Card card : cards_on_table) {
         message += card.to_string();
     }
-    message += map_int_to_place_name[winner];
+    message += std::string(1, map_int_to_place_name[winner]);
 
     message += "\r\n";
 
@@ -879,7 +879,7 @@ void send_score(int socket_fd, struct ClientInfo* clients) {
     std::string message = "SCORE";
 
     for (int i = 1; i <= 4; i++) {
-        message += map_int_to_place_name[i];
+        message += std::string(1, map_int_to_place_name[i]);
         message += std::to_string(clients[i].round_points);
     }
 
@@ -897,7 +897,7 @@ void send_total(int socket_fd, struct ClientInfo* clients) {
     std::string message = "TOTAL";
 
     for (int i = 1; i <= 4; i++) {
-        message += map_int_to_place_name[i];
+        message += std::string(1, map_int_to_place_name[i]);
         message += std::to_string(clients[i].total_points);
     }
 
@@ -951,6 +951,7 @@ void handle_new_client_request(int* active_clients, struct pollfd* poll_fds, str
             std::cerr << "Couldn't accept client\n";
         }
         bool oc[] = {true, true, true, true, true};
+        std::cerr << "odsylam busy w tym miejscu bo jestem zjebany vol. 2137\n";
         send_busy(temp_fd, oc);
         close(temp_fd);
     }
@@ -983,6 +984,7 @@ void handle_pollin(struct pollfd* poll_fds, int i, struct ClientInfo* clients,
                 clients[i].chosen_position = p;
                 (*ready)++;
             } else {
+                std::cerr << "odsylam busy w tym miejscu bo jestem zjebany vol. 2138\n";
                 send_busy(poll_fds[i].fd, is_place_occupied);
                 disconnect_client(poll_fds, clients, active_clients, ready, i);
                 std::cerr << "place busy: ending connection (id: " << i << ")\n";
@@ -1205,6 +1207,8 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
         
         // Start the round:
         broadcast_deal(clients, type, round.starting_player, round.card_strings);
+        std::cout << "sent deal to each client\n";
+        sleep(2);
 
         // 13 TRICKS:
         for (int l = 1; l <= TRICKS_IN_ROUND; l++) { // l - numer lewy
@@ -1496,7 +1500,7 @@ int main(int argc, char** argv) {
         initialize_descriptors(poll_fds, socket_fd);
         initialize_clients_info(clients);
         connect_with_players(poll_fds, clients, timeout, socket_fd);
-        // game_manager(game, poll_fds, clients, timeout);
+        game_manager(game, poll_fds, clients, timeout);
         
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
