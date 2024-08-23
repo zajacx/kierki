@@ -38,11 +38,13 @@
 #define ERROR 1
 
 #define HAND 13
+#define TRICKS_IN_ROUND 13
 
 #define BUFFER_SIZE 500
 #define TIMEOUT 500
+#define READING_LIMIT 200
 
-// ---------------------- Declarations -----------------------
+// --------------------------- Declarations & Data Structures ---------------------------
 
 static std::map<char, int> map_place = {
     {'N', 1},
@@ -97,7 +99,8 @@ struct Game {
     }
 };
 
-// -------------------------- Functions for structs --------------------------
+
+// ------------------------------- Functions for structs --------------------------------
 
 // Card parser.
 Card parse_card(const std::string& hand_str, size_t& pos, bool* fmt_ok) {
@@ -155,11 +158,12 @@ int parse_card_set(const std::string& hand_str, std::vector<Card>& card_vector) 
     return GOOD;
 }
 
-// -------------------------- Initialization -------------------------
+
+// ----------------------------------- Initialization -----------------------------------
 
 // Sets variables describing input options.
 int set_input_variables(int argc, char** argv, std::string* host, std::string* port, 
-                        char* place, bool* ipv4, bool* ipv6, bool* robot) {
+                        char* place, bool* ipv4, bool* ipv6, bool* bot) {
     int opt;
     while ((opt = getopt(argc, argv, "h:p:46NEWSa")) != -1) {
         switch (opt) {
@@ -194,7 +198,7 @@ int set_input_variables(int argc, char** argv, std::string* host, std::string* p
                 *place = 'W';
                 break;
             case 'a':
-                *robot = true;
+                *bot = true;
                 break;
             default:
                 return ERROR;
@@ -205,9 +209,9 @@ int set_input_variables(int argc, char** argv, std::string* host, std::string* p
 
 // Parses command line arguments.
 void parse_arguments(int argc, char** argv, std::string* host, std::string* port, 
-                     char* place, bool* ipv4, bool* ipv6, bool* robot)
+                     char* place, bool* ipv4, bool* ipv6, bool* bot)
 {
-    if (set_input_variables(argc, argv, host, port, place, ipv4, ipv6, robot) == ERROR ||
+    if (set_input_variables(argc, argv, host, port, place, ipv4, ipv6, bot) == ERROR ||
         (*host).empty() ||
         (*port).empty() ||
         *place == 'X'
@@ -220,7 +224,7 @@ void parse_arguments(int argc, char** argv, std::string* host, std::string* port
 
 // [TEST FUNCTION] Prints initial settings info.
 void print_options_info(std::string host, std::string port, char place,
-                        bool ipv4, bool ipv6, bool robot)
+                        bool ipv4, bool ipv6, bool bot)
 {
     std::cout << "Selected program options:\n";
     std::cout << "Host (-h): " << host << "\n";
@@ -236,7 +240,7 @@ void print_options_info(std::string host, std::string port, char place,
 
     std::cout << "Place (-N/E/S/W): " << place << "\n";
 
-    if (robot) {
+    if (bot) {
         std::cout << "Robot\n";
     } else {
         std::cout << "Player\n";
@@ -453,8 +457,35 @@ void send_iam(int socket_fd, char place) {
 }
 
 
-// ------------------------------ Parsers ---------------------------------
+// ------------------------------------- Parsers ----------------------------------------
 
+int read_to_newline(int descriptor, std::string* result) {
+    
+    char buf;
+    std::string buffer;
+    ssize_t last_read_size;
+
+    int count = 0;
+    while (count < READING_LIMIT) {
+        ssize_t read_byte = readn(descriptor, &buf, 1, &last_read_size);
+        if (read_byte < 0) {
+            return (int) read_byte;
+        } else if (read_byte == 0) {
+            break;
+        } else if (read_byte == 1) {
+            count++;
+            buffer += buf;
+            if (buffer.size() >= 2 && buffer.substr(buffer.size() - 2) == "\r\n") {
+                *result = buffer;
+                return count;
+            }
+        } else {
+            throw std::runtime_error("weird error in readn");
+        }
+    }
+    // Return number of read bytes:
+    return count;
+}
 
 // Parser for a message of type: BUSY<place list>\r\n.
 int parse_busy(const std::string& message, std::vector<char>& busy_places) {
@@ -681,52 +712,231 @@ void check_poll_error(int poll_status) {
 }
 
 
-// to może być w sumie int, żeby stwierdzić czy wywoływać w ogóle play_game()
-// 0 - przyszedł deal
-// 1 - przyszedł busy
-// 2 - ewentualny inny błąd
-bool recv_busy_or_deal(int socket_fd, struct pollfd* poll_fds) {
-    // tutaj musi być poll i oczekiwanie na deskryptorze na odebranie wiadomości
-    // od serwera ale też responsywność jeśli chodzi o użytkownika
-    
+// -------------------------------------- Game ------------------------------------------
 
-    char buffer[BUFFER_SIZE];
+// TODO: edgecases (polerr, pollhup, ...) in all receivers
 
-    while (true) {
-        
+// Receives first message from the server to determine if server accepted a request.
+bool recv_busy_or_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, char* starting_player, Hand& hand) {
+
+    bool received = false;
+
+    do {
         poll_fds[0].revents = 0;
         poll_fds[1].revents = 0;
 
-        int poll_status = poll(poll_fds, 2, TIMEOUT);
+        // Client can wait indefinitely:
+        int poll_status = poll(poll_fds, 2, -1); 
         check_poll_error(poll_status);
 
         if (poll_status > 0) {
             // Message from server:
             if (poll_fds[0].revents & POLLIN) {
-                // tutaj handlujemy wiadomości od serwera
-                // handle_init_server_message();
-                // jeśli dostaniemy dobre, to break.
+
+                ssize_t last_read_size;
+                std::string buffer = "";
+                                                
+                int received_bytes = read_to_newline(poll_fds[0].fd, &buffer);
+
+                if (received_bytes < 0) {
+                    // błąd, rozłącz klienta
+                    std::cerr << "couldn't receive the message, disconnecting\n";
+                    break;
+                } else if (received_bytes == 0) {
+                    // serwer zamknął połączenie, zamknij klienta
+                    std::cerr << "server closed the connection\n";
+                    break;
+                } else {
+                    // coś odebrano - próbujemy parsować BUSY albo DEAL
+                    std::vector<char> busy_places;
+                    if (parse_busy(buffer, busy_places)) {
+                        std::cerr << "received busy, disconnecting; busy places: ";
+                        for (char place : busy_places) {
+                            std::cerr << place << " ";
+                        }
+                        std::cerr << "\n";
+                        break;
+                    }
+                    else if (parse_deal(buffer, round_type, starting_player, hand)) {
+                        // tutaj serwer może rzucać komunikatami TAKEN, bo możemy
+                        // podłączać się do aktualnej rozgrywki, więc czytamy do
+                        // skutku - jeśli się nie uda sparsować TAKEN, to próbujemy parsować TRICK
+
+                        // na razie implementujemy tylko grę od początku do końca
+                        std::cout << "received deal, starting game\n";
+                        received = true;
+                        break;
+                    }
+                    else {
+                        // nie wiadomo co przyszło, czekamy dalej;
+                        std::cerr << "parsing failed, waiting for another message\n";
+                    }
+                }
             }
             // Data from user:
             if (poll_fds[1].revents & POLLIN) {
-                // tutaj handlujemy wiadomośći od użytkownika
+                // tutaj handlujemy wiadomości od użytkownika
                 // handle_init_user_message();
+
+                ssize_t last_read_size;
+                char buffer[BUFFER_SIZE];
+                                                
+                int received_bytes = readn(poll_fds[1].fd, buffer, BUFFER_SIZE, &last_read_size);
+
+                std::cerr << "wait for the game to start!\n";
             }
         }
         else {
             std::cout << "timeout...\n";
         }
-    }
+    } while (!received);
+
+    return received;
+}
+
+void recv_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, char* starting_player, Hand& hand) {
 
     bool received = false;
+
     do {
-        // tutaj czekamy aż odbierzemy coś od serwera
+        poll_fds[0].revents = 0;
+        poll_fds[1].revents = 0;
+
+        // Client can wait indefinitely:
+        int poll_status = poll(poll_fds, 2, -1); 
+        check_poll_error(poll_status);
+
+        if (poll_status > 0) {
+            // Message from server:
+            if (poll_fds[0].revents & POLLIN) {
+
+                ssize_t last_read_size;
+                std::string buffer = "";
+                                                
+                int received_bytes = read_to_newline(poll_fds[0].fd, &buffer);
+
+                if (received_bytes < 0) {
+                    throw std::runtime_error("couldn't receive the message, disconnecting\n");
+                } else if (received_bytes == 0) {
+                    throw std::runtime_error("server closed the connection\n");
+                } else {
+                    // coś odebrano - próbujemy parsować DEAL
+                    if (parse_deal(buffer, round_type, starting_player, hand)) {
+                        std::cout << "received deal\n";
+                        received = true;
+                        break;
+                    }
+                    else {
+                        // nie wiadomo co przyszło, czekamy dalej;
+                        std::cerr << "parsing failed, waiting for another message\n";
+                    }
+                }
+            }
+            // Message from user:
+            if (poll_fds[1].revents & POLLIN) {
+                // tutaj handlujemy wiadomości od użytkownika
+                // handle_init_user_message();
+
+                ssize_t last_read_size;
+                char buffer[BUFFER_SIZE];
+                                                
+                int received_bytes = readn(poll_fds[1].fd, buffer, BUFFER_SIZE, &last_read_size);
+
+                std::cerr << "waiting for deal\n";
+            }
+        }
+        else {
+            std::cout << "timeout...\n";
+        }
+    } while (!received);
+}
+
+void recv_taken_or_wrong(int socket_fd, struct pollfd* poll_fds, bool* accepted, bool round_one) {
+
+    bool received = false;
+
+    do {
+        poll_fds[0].revents = 0;
+        poll_fds[1].revents = 0;
+
+        // Client can wait indefinitely:
+        int poll_status = poll(poll_fds, 2, -1); 
+        check_poll_error(poll_status);
+
+        if (poll_status > 0) {
+            // Message from server:
+            if (poll_fds[0].revents & POLLIN) {
+
+                ssize_t last_read_size;
+                std::string buffer = "";
+                                                
+                int received_bytes = read_to_newline(poll_fds[0].fd, &buffer);
+
+                if (received_bytes < 0) {
+                    throw std::runtime_error("couldn't receive the message, disconnecting\n");
+                } else if (received_bytes == 0) {
+                    throw std::runtime_error("server closed the connection\n");
+                } else {
+                    // coś odebrano - próbujemy parsować DEAL
+                    if (parse_taken(buffer, &trick_number, cards_taken, &taken_by, round_one));
+                    if (parse_deal(buffer, round_type, starting_player, hand)) {
+                        std::cout << "received deal\n";
+                        received = true;
+                        break;
+                    }
+                    else {
+                        // nie wiadomo co przyszło, czekamy dalej;
+                        std::cerr << "parsing failed, waiting for another message\n";
+                    }
+                }
+            }
+            // Message from user:
+            if (poll_fds[1].revents & POLLIN) {
+                // tutaj handlujemy wiadomości od użytkownika
+                // handle_init_user_message();
+
+                ssize_t last_read_size;
+                char buffer[BUFFER_SIZE];
+                                                
+                int received_bytes = readn(poll_fds[1].fd, buffer, BUFFER_SIZE, &last_read_size);
+
+                std::cerr << "waiting for deal\n";
+            }
+        }
+        else {
+            std::cout << "timeout...\n";
+        }
     } while (!received);
 }
 
 // prowadzi grę
-void play_game() {
+void play_game(int socket_fd, struct pollfd* poll_fds, int s_round_type, char s_starting_player, Hand& hand) {
 
+    int round_type = s_round_type;
+    char starting_player = s_starting_player;
+    
+    int round = 0;
+
+    while (true) {
+        // początek rozdania, odbierz DEAL:
+        if (round != 0) {
+            hand.cards.clear();
+            recv_deal(socket_fd, poll_fds, &round_type, &starting_player, hand);
+        }
+        // rozegraj 13 lew:
+        for (int l = 1; l <= TRICKS_IN_ROUND; l++) {
+            bool accepted = false;
+            do {
+                // do odbierania tricka i odpowiedzi serwera mamy dwa różne polle.
+                recv_trick();
+                send_trick();
+                recv_taken_or_wrong(socket_fd, poll_fds, &accepted, (round == 0)); // taken - potwierdzenie, wrong - ponawiamy
+            } while (!accepted);
+        }
+        recv_score();
+        recv_total();
+        round++;
+    }
 }
 
 // Initializes descriptors' array to use in poll().
@@ -738,9 +948,7 @@ void initialize_descriptors(struct pollfd* poll_fds, int socket_fd) {
 }
 
 
-    
-
-// ----------------------------- Main -------------------------------
+// --------------------------------------- Main -----------------------------------------
 
 int main(int argc, char** argv) {
 
@@ -749,7 +957,7 @@ int main(int argc, char** argv) {
     char place;
     bool ipv4 = false;
     bool ipv6 = false;
-    bool robot = false;
+    bool bot = false;
 
     // Runtime data:
     uint16_t port;
@@ -759,22 +967,31 @@ int main(int argc, char** argv) {
     int socket_fd;
     struct pollfd poll_fds[2];
 
+    // First round:
+    int round_type;
+    char starting_player;
+    Hand hand;
+
     // State:
     bool connected = false;
 
     try {
         // Client initialization:
-        parse_arguments(argc, argv, &host, &port_s, &place, &ipv4, &ipv6, &robot);
-        print_options_info(host, port_s, place, ipv4, ipv6, robot); // TEST
+        parse_arguments(argc, argv, &host, &port_s, &place, &ipv4, &ipv6, &bot);
+        print_options_info(host, port_s, place, ipv4, ipv6, bot); // TEST
         initialize_descriptors(poll_fds, socket_fd);
         connect_to_server(port_s, &port, host, ipv4, ipv6, &server_address,
                           &socket_fd, &connected, &family);
         send_iam(place, socket_fd);
-        /*
-        if (recv_busy_or_deal()) { // rozpoznanie czy w ogóle jesteśmy dopuszczeni do gry
-            play_game();
+        
+        // Determine if we are accepted to join the game:
+        if (recv_busy_or_deal(socket_fd, poll_fds, &round_type, &starting_player, hand)) {
+            std::cout << "received deal, joining the game\n";
+            // play_game();
+        } else {
+            std::cout << "received busy, disconnecting\n";
         }
-        */
+        
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         disconnect_from_server(&connected, socket_fd);
@@ -792,9 +1009,8 @@ int main(int argc, char** argv) {
         return ERROR;
     }
     */
-    
 
-    // disconnect_from_server(&connected, socket_fd);
+    disconnect_from_server(&connected, socket_fd);
     return GOOD;
 }
 

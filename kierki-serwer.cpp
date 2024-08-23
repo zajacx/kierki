@@ -670,6 +670,7 @@ void calculate_remaining_time(struct pollfd* poll_fds, struct ClientInfo* client
 // Reads from given descriptor until it finds "\r\n" sequence.
 // Writes read sequence to an external buffer ext_buffer
 // Returns number of read bytes or -1 in case of error.
+// COMMON
 int read_to_newline(int descriptor, std::string* result) {
     
     char buf;
@@ -782,202 +783,8 @@ void print_clients(struct ClientInfo* clients) {
 }
 
 
-// tutaj będzie wysyłanie wiadomości
-
-
-// ---------------------------------- Event handlers ------------------------------------
-
-// Handles an event (client's connection request) on main descriptor.
-void handle_new_client_request(int* active_clients, struct pollfd* poll_fds, struct ClientInfo* clients) {
-    if (*active_clients < CONNECTIONS) {
-        accept_client(poll_fds, clients);
-        (*active_clients)++;
-        std::cout << "Client " << *active_clients << " accepted\n"; // test
-    } else {
-        struct sockaddr_storage client_address;
-        socklen_t len;
-        int temp_fd = accept(poll_fds[0].fd, (struct sockaddr*)&client_address, &len);
-        if (temp_fd < 0) {
-            std::cerr << "Couldn't accept client\n";
-        }
-        bool oc[] = {true, true, true, true, true};
-        send_busy(temp_fd, oc);
-        close(temp_fd);
-    }
-}
-
-// Sends BUSY<place list> message to the client.
-void send_busy(int socket_fd, bool* is_place_occupied) {
-    
-    std::string message = "BUSY";
-    
-    if (is_place_occupied[N]) message += 'N';
-    if (is_place_occupied[E]) message += 'E';
-    if (is_place_occupied[S]) message += 'S';
-    if (is_place_occupied[W]) message += 'W';
-    
-    message += "\r\n";
-    
-    std::cout << "sending " << message << "to client\n";
-    ssize_t written_bytes = writen(socket_fd, message.c_str(), message.length());
-    if (written_bytes <= 0) {
-        throw std::runtime_error("writen (busy)");
-    }
-}
-
-// Handles an event (new message) on given (i-th) descriptor.
-void handle_pollin(struct pollfd* poll_fds, int i, struct ClientInfo* clients,
-                   int* active_clients, int* ready, bool* is_place_occupied) {
-    
-    ssize_t last_read_size;
-    std::string buffer = "";
-                    
-    int received_bytes = read_to_newline(poll_fds[i].fd, &buffer);
-
-    if (received_bytes < 0) {
-        disconnect_client(poll_fds, clients, active_clients, ready, i);
-        std::cerr << "readn failed: ending connection (id: " << i << ")\n";
-    } else if (received_bytes == 0) {
-        disconnect_client(poll_fds, clients, active_clients, ready, i);
-        std::cerr << "empty readn: ending connection (id: " << i << ")\n";
-    } else {
-        std::cout << "received " << received_bytes << " bytes within connection (id: " << i << ")\n";
-        std::cout << "parsing message: " << buffer << "\n";
-        char place;
-        if (parse_iam(buffer, &place) == 0) {
-            std::cout << "received IAM" << place << "\n";
-            get_occupied_places(clients, is_place_occupied);
-            int p = map_place[place];
-            if (!is_place_occupied[p]) {
-                clients[i].chosen_position = p;
-                (*ready)++;
-            } else {
-                send_busy(poll_fds[i].fd, is_place_occupied);
-                disconnect_client(poll_fds, clients, active_clients, ready, i);
-                std::cerr << "place busy: ending connection (id: " << i << ")\n";
-            }
-
-        } else {
-            // czy to jest na pewno to samo?
-            close(poll_fds[i].fd);
-            (*active_clients)--;
-            // if (clients[i].chosen_position != 0) ready--;
-            clear_descriptor(poll_fds, i);
-            clear_client_info(clients, i);
-            std::cerr << "Wrong message from client (id: " << i << "), disconnected\n";
-        }
-    }
-}
-
-
-/**
- * CONNECTION
- * - struct pollfd* ready_poll_fds is a pointer to an array of sorted clients data
- *   (according to their place choice) - filled by this function at the end.
- * - struct ClientInfo* ready_clients is similar but for other data.
- * - int timeout is a constant value given as an argument when starting the server.
- * - int socket_fd is a descriptor of the server.
- */
-
-// Create connections with all players.
-void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* ready_clients, 
-                          int timeout, int socket_fd) {
-
-    struct pollfd poll_fds[POLL_SIZE];
-    struct ClientInfo clients[POLL_SIZE];
-    bool is_place_occupied[POLL_SIZE];
-
-    initialize_descriptors(poll_fds, socket_fd);
-    initialize_clients_info(clients);
-    initialize_is_occupied(is_place_occupied);
-
-    // After establishing all four connections, poll_fds and clients
-    // will be rewritten to ready_poll_fds and ready_clients.
-
-    int poll_timeout = TIMEOUT;
-    int active_clients = 0;
-    int ready = 0;
-
-    do {
-        for (int i = 0; i < POLL_SIZE; i++) {
-            poll_fds[i].revents = 0;
-        }
-
-        int poll_status = poll(poll_fds, POLL_SIZE, poll_timeout);
-        check_poll_error(poll_status);
-
-        /*
-        DEBUG:
-        std::cout << "Poll descriptors array:\n";
-        for (int i = 0; i < POLL_SIZE; i++) {
-            std::cout << "fd=" << poll_fds[i].fd << " events=" << poll_fds[i].events << " revents=" << poll_fds[i].revents << "\n";
-        }
-        */
-
-        if (poll_status > 0) {
-            // New connection: new client is accepted.
-            if (poll_fds[0].revents & POLLIN) {
-
-                handle_new_client_request(&active_clients, poll_fds, clients);
-                std::cout << "active_clients after connection: " << active_clients << "\n";
-
-            }
-            // Serve connected clients - receive IAM or reject message/connection.
-            for (int i = 1; i <= CONNECTIONS; i++) {
-                
-                // POLLIN <=> received a message.
-                if (poll_fds[i].fd != -1 && (poll_fds[i].revents & POLLIN)) {
-
-                    handle_pollin(poll_fds, i, clients, &active_clients, &ready, is_place_occupied);
-                    
-                }
-                // POLLHUP <=> client disconnected by server - in case of some weird behaviour.
-                else if (poll_fds[i].fd != -1 && (poll_fds[i].revents & POLLHUP)) {
-                    disconnect_client(poll_fds, clients, &active_clients, &ready, i);
-                    std::cerr << "client " << i << " disconnected - waiting to reconnect\n";
-                }
-                // POLLERR <=> client's error.
-                else if (poll_fds[i].fd != -1 && (poll_fds[i].revents & POLLERR)) {
-                    disconnect_client(poll_fds, clients, &active_clients, &ready, i);
-                    std::cerr << "client " << i << " got an error - disconnected\n";
-                }
-                // POLLNVAL <=> wrong descriptor.
-                else if (poll_fds[i].fd != -1 && (poll_fds[i].revents & POLLNVAL)) {
-                    disconnect_client(poll_fds, clients, &active_clients, &ready, i);
-                    std::cerr << "error in poll_fds array: descriptor " << i << "is wrong\n";
-                }
-            }
-        } 
-        else {
-            std::cout << "timeout...\n";
-        }
-
-        calculate_remaining_time(poll_fds, clients, timeout, &poll_timeout, &active_clients, &ready);
-
-    } while (ready < CONNECTIONS);
-
-    for (int i = 1; i <= CONNECTIONS; i++) {
-        int p = clients[i].chosen_position;
-        ready_poll_fds[p].fd = poll_fds[i].fd;
-        ready_clients[p].fd = clients[i].fd;
-        ready_clients[p].port = clients[i].port;
-        ready_clients[p].ip_and_port = clients[i].ip_and_port;
-        ready_clients[p].connection_time = clients[i].connection_time;
-        ready_clients[p].chosen_position = clients[i].chosen_position;
-    }
-
-    // test:
-
-    print_poll_fds(ready_poll_fds);
-    print_clients(ready_clients);
-
-    std::cout << "Connections established, game is starting...\n";
-}
-
-
 // ---------------------------------- Sending messages ----------------------------------
 
-/*
 // Sends BUSY<place list> message to the client.
 void send_busy(int socket_fd, bool* is_place_occupied) {
     
@@ -996,7 +803,6 @@ void send_busy(int socket_fd, bool* is_place_occupied) {
         throw std::runtime_error("writen (busy)");
     }
 }
-*/
 
 // Sends DEAL<round type><starting player><card list> message to the client.
 void send_deal(int socket_fd, int round_type, char starting_player, std::string card_string) {
@@ -1129,7 +935,182 @@ void broadcast_total(struct ClientInfo* clients) {
 }
 
 
-// ---------------------------------------- Game ----------------------------------------
+// ---------------------------------- Event handlers ------------------------------------
+
+// Handles an event (client's connection request) on main descriptor.
+void handle_new_client_request(int* active_clients, struct pollfd* poll_fds, struct ClientInfo* clients) {
+    if (*active_clients < CONNECTIONS) {
+        accept_client(poll_fds, clients);
+        (*active_clients)++;
+        std::cout << "Client " << *active_clients << " accepted\n"; // test
+    } else {
+        struct sockaddr_storage client_address;
+        socklen_t len;
+        int temp_fd = accept(poll_fds[0].fd, (struct sockaddr*)&client_address, &len);
+        if (temp_fd < 0) {
+            std::cerr << "Couldn't accept client\n";
+        }
+        bool oc[] = {true, true, true, true, true};
+        send_busy(temp_fd, oc);
+        close(temp_fd);
+    }
+}
+
+// Handles an event (new message) on given (i-th) descriptor.
+void handle_pollin(struct pollfd* poll_fds, int i, struct ClientInfo* clients,
+                   int* active_clients, int* ready, bool* is_place_occupied) {
+    
+    ssize_t last_read_size;
+    std::string buffer = "";
+                    
+    int received_bytes = read_to_newline(poll_fds[i].fd, &buffer);
+
+    if (received_bytes < 0) {
+        disconnect_client(poll_fds, clients, active_clients, ready, i);
+        std::cerr << "readn failed: ending connection (id: " << i << ")\n";
+    } else if (received_bytes == 0) {
+        disconnect_client(poll_fds, clients, active_clients, ready, i);
+        std::cerr << "empty readn: ending connection (id: " << i << ")\n";
+    } else {
+        std::cout << "received " << received_bytes << " bytes within connection (id: " << i << ")\n";
+        std::cout << "parsing message: " << buffer << "\n";
+        char place;
+        if (parse_iam(buffer, &place) == 0) {
+            std::cout << "received IAM" << place << "\n";
+            get_occupied_places(clients, is_place_occupied);
+            int p = map_place[place];
+            if (!is_place_occupied[p]) {
+                clients[i].chosen_position = p;
+                (*ready)++;
+            } else {
+                send_busy(poll_fds[i].fd, is_place_occupied);
+                disconnect_client(poll_fds, clients, active_clients, ready, i);
+                std::cerr << "place busy: ending connection (id: " << i << ")\n";
+            }
+
+        } else {
+            // czy to jest na pewno to samo?
+            close(poll_fds[i].fd);
+            (*active_clients)--;
+            // if (clients[i].chosen_position != 0) ready--;
+            clear_descriptor(poll_fds, i);
+            clear_client_info(clients, i);
+            std::cerr << "Wrong message from client (id: " << i << "), disconnected\n";
+        }
+    }
+}
+
+
+// ------------------------------ First part: connection --------------------------------
+
+/**
+ * CONNECTION
+ * - struct pollfd* ready_poll_fds is a pointer to an array of sorted clients data
+ *   (according to their place choice) - filled by this function at the end.
+ * - struct ClientInfo* ready_clients is similar but for other data.
+ * - int timeout is a constant value given as an argument when starting the server.
+ * - int socket_fd is a descriptor of the server.
+ */
+
+// Create connections with all players.
+void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* ready_clients, 
+                          int timeout, int socket_fd) {
+
+    struct pollfd poll_fds[POLL_SIZE];
+    struct ClientInfo clients[POLL_SIZE];
+    bool is_place_occupied[POLL_SIZE];
+
+    initialize_descriptors(poll_fds, socket_fd);
+    initialize_clients_info(clients);
+    initialize_is_occupied(is_place_occupied);
+
+    // After establishing all four connections, poll_fds and clients
+    // will be rewritten to ready_poll_fds and ready_clients.
+
+    int poll_timeout = TIMEOUT;
+    int active_clients = 0;
+    int ready = 0;
+
+    do {
+        for (int i = 0; i < POLL_SIZE; i++) {
+            poll_fds[i].revents = 0;
+        }
+
+        int poll_status = poll(poll_fds, POLL_SIZE, poll_timeout);
+        check_poll_error(poll_status);
+
+        /*
+        DEBUG:
+        std::cout << "Poll descriptors array:\n";
+        for (int i = 0; i < POLL_SIZE; i++) {
+            std::cout << "fd=" << poll_fds[i].fd << " events=" << poll_fds[i].events << " revents=" << poll_fds[i].revents << "\n";
+        }
+        */
+
+        if (poll_status > 0) {
+            // New connection: new client is accepted.
+            if (poll_fds[0].revents & POLLIN) {
+
+                handle_new_client_request(&active_clients, poll_fds, clients);
+                std::cout << "active_clients after connection: " << active_clients << "\n";
+
+            }
+            // Serve connected clients - receive IAM or reject message/connection.
+            for (int i = 1; i <= CONNECTIONS; i++) {
+                
+                // POLLIN <=> received a message.
+                if (poll_fds[i].fd != -1 && (poll_fds[i].revents & POLLIN)) {
+
+                    handle_pollin(poll_fds, i, clients, &active_clients, &ready, is_place_occupied);
+                    
+                }
+                // POLLHUP <=> client disconnected by server - in case of some weird behaviour.
+                else if (poll_fds[i].fd != -1 && (poll_fds[i].revents & POLLHUP)) {
+                    disconnect_client(poll_fds, clients, &active_clients, &ready, i);
+                    std::cerr << "client " << i << " disconnected - waiting to reconnect\n";
+                }
+                // POLLERR <=> client's error.
+                else if (poll_fds[i].fd != -1 && (poll_fds[i].revents & POLLERR)) {
+                    disconnect_client(poll_fds, clients, &active_clients, &ready, i);
+                    std::cerr << "client " << i << " got an error - disconnected\n";
+                }
+                // POLLNVAL <=> wrong descriptor.
+                else if (poll_fds[i].fd != -1 && (poll_fds[i].revents & POLLNVAL)) {
+                    disconnect_client(poll_fds, clients, &active_clients, &ready, i);
+                    std::cerr << "error in poll_fds array: descriptor " << i << "is wrong\n";
+                }
+            }
+        } 
+        else {
+            std::cout << "timeout...\n";
+        }
+
+        calculate_remaining_time(poll_fds, clients, timeout, &poll_timeout, &active_clients, &ready);
+
+    } while (ready < CONNECTIONS);
+
+    for (int i = 1; i <= CONNECTIONS; i++) {
+        int p = clients[i].chosen_position;
+        ready_poll_fds[p].fd = poll_fds[i].fd;
+        ready_clients[p].fd = clients[i].fd;
+        ready_clients[p].port = clients[i].port;
+        ready_clients[p].ip_and_port = clients[i].ip_and_port;
+        ready_clients[p].connection_time = clients[i].connection_time;
+        ready_clients[p].chosen_position = clients[i].chosen_position;
+    }
+
+    // test:
+
+    print_poll_fds(ready_poll_fds);
+    print_clients(ready_clients);
+
+    std::cout << "Connections established, game is starting...\n";
+}
+
+
+
+
+// --------------------------------- Second part: game ----------------------------------
 
 /*
 struct ClientInfo {
@@ -1143,7 +1124,8 @@ struct ClientInfo {
 };
 */
 
-/*
+/* 
+TODO
 // Clears i-th client's info in clients data array during the game.
 void clear_client_info_in_game(struct ClientInfo* clients, int i) {
     clients[i].fd = -1;
@@ -1153,6 +1135,7 @@ void clear_client_info_in_game(struct ClientInfo* clients, int i) {
     // New player inherits all remaining data.
 }
 
+TODO
 // Accepts connection from client and puts it in clients array.
 void accept_client_in_game(struct pollfd* poll_fds, struct ClientInfo* clients) {
     
@@ -1188,6 +1171,7 @@ void accept_client_in_game(struct pollfd* poll_fds, struct ClientInfo* clients) 
     clients[id].chosen_position = 0;
 }
 
+TODO
 // Disconnects client occupying i-th position in descriptors' array.
 void disconnect_client_in_game(struct pollfd* poll_fds, struct ClientInfo* clients,
                                int* active_clients, int i) {
@@ -1483,7 +1467,8 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
 
 }
 
-// ---------------------------------- Main ----------------------------------
+
+// ---------------------------------------- Main ----------------------------------------
 
 int main(int argc, char** argv) {
 
