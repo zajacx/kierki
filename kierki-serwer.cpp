@@ -780,6 +780,16 @@ void print_clients(struct ClientInfo* clients) {
         std::cout << clients[i].chosen_position << "\t";
     }
     std::cout << "\n";
+    std::cout << "scr:\t";
+    for (int i = 0; i < POLL_SIZE; i++) {
+        std::cout << clients[i].round_points << "\t";
+    }
+    std::cout << "\n";
+    std::cout << "tot:\t";
+    for (int i = 0; i < POLL_SIZE; i++) {
+        std::cout << clients[i].total_points << "\t";
+    }
+    std::cout << "\n";
 }
 
 
@@ -1468,9 +1478,12 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
             player = winner;
         }
 
+        print_poll_fds(poll_fds);
+        print_clients(clients);
+
         // Po rozdaniu wysyłamy SCORE i TOTAL:
-        // broadcast_score(clients);
-        // broadcast_total(clients);
+        broadcast_score(clients);
+        broadcast_total(clients);
 
         // Czyścimy punktację z minionego rozdania, zachowujemy generalną:
         for (int i = 1; i <= CONNECTIONS; i++) {

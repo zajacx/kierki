@@ -470,6 +470,34 @@ int read_to_newline(int descriptor, std::string* result) {
     return count;
 }
 
+int user_read_to_newline(int descriptor, std::string* result) {
+    
+    char buf;
+    std::string buffer;
+    ssize_t last_read_size;
+
+    int count = 0;
+    while (count < READING_LIMIT) {
+        ssize_t read_byte = readn(descriptor, &buf, 1, &last_read_size);
+        if (read_byte < 0) {
+            return (int) read_byte;
+        } else if (read_byte == 0) {
+            break;
+        } else if (read_byte == 1) {
+            count++;
+            buffer += buf;
+            if (buffer.size() >= 1 && buffer.substr(buffer.size() - 1) == "\n") {
+                *result = buffer;
+                return count;
+            }
+        } else {
+            throw std::runtime_error("weird error in readn");
+        }
+    }
+    // Return number of read bytes:
+    return count;
+}
+
 // Parser for a message of type: BUSY<place list>\r\n.
 int parse_busy(const std::string& message, std::vector<char>& busy_places) {
 
@@ -823,14 +851,8 @@ bool recv_busy_or_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, 
             }
             // Data from user:
             if (poll_fds[1].revents & POLLIN) {
-                // tutaj handlujemy wiadomości od użytkownika
-                // handle_init_user_message();
-
-                ssize_t last_read_size;
-                char buffer[BUFFER_SIZE];
-                                                
-                int received_bytes = readn(poll_fds[1].fd, buffer, BUFFER_SIZE, &last_read_size);
-
+                std::string buffer = ""; 
+                int received_bytes = user_read_to_newline(poll_fds[1].fd, &buffer);
                 std::cerr << "wait for the game to start!\n";
             }
         }
@@ -867,7 +889,7 @@ void recv_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, char* st
                 if (received_bytes < 0) {
                     throw std::runtime_error("couldn't receive the message, disconnecting\n");
                 } else if (received_bytes == 0) {
-                    throw std::runtime_error("server closed the connection\n");
+                    throw std::runtime_error("finished");
                 } else {
                     // coś odebrano - próbujemy parsować DEAL
                     if (parse_deal(buffer, round_type, starting_player, hand) == GOOD) {
@@ -883,14 +905,8 @@ void recv_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, char* st
             }
             // Message from user:
             if (poll_fds[1].revents & POLLIN) {
-                // tutaj handlujemy wiadomości od użytkownika
-                // handle_init_user_message();
-
-                ssize_t last_read_size;
-                char buffer[BUFFER_SIZE];
-                                                
-                int received_bytes = readn(poll_fds[1].fd, buffer, BUFFER_SIZE, &last_read_size);
-
+                std::string buffer = ""; 
+                int received_bytes = user_read_to_newline(poll_fds[1].fd, &buffer);
                 std::cerr << "waiting for deal\n";
             }
         }
@@ -901,7 +917,8 @@ void recv_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, char* st
 }
 
 
-void recv_trick(int socket_fd, struct pollfd* poll_fds, char* suit, bool trick_one) {
+void recv_trick_or_score(int socket_fd, struct pollfd* poll_fds, char* suit, bool trick_one,  bool* early_finish,
+                         int* scores, int* total_scores) {
 
     bool received = false;
 
@@ -927,9 +944,10 @@ void recv_trick(int socket_fd, struct pollfd* poll_fds, char* suit, bool trick_o
                 } else if (received_bytes == 0) {
                     throw std::runtime_error("server closed the connection\n");
                 } else {
-                    // coś odebrano - próbujemy parsować TRICK
                     int trick_number;
                     std::vector<Card> on_table;
+
+                    // TRICK:
                     if (parse_trick(buffer, &trick_number, on_table, trick_one) == GOOD) {
                         std::cout << "received trick\n";
                         if (on_table.size() != 0) {
@@ -937,6 +955,19 @@ void recv_trick(int socket_fd, struct pollfd* poll_fds, char* suit, bool trick_o
                         }
                         received = true;
                         break;
+                    }
+                    // SCORE + TOTAL:
+                    else if (parse_score(buffer, scores) == GOOD) {
+                        std::cout << "received score - early round ending\n";
+                        received_bytes = read_to_newline(poll_fds[0].fd, &buffer);
+                        if (parse_total(buffer, total_scores) == GOOD) {
+                            std::cout << "received total - early round ending\n";
+                            received = true;
+                            *early_finish = true;
+                            break;
+                        } else {
+                            std::cerr << "error parsing early total\n";
+                        }
                     }
                     else {
                         // nie wiadomo co przyszło, czekamy dalej;
@@ -946,14 +977,8 @@ void recv_trick(int socket_fd, struct pollfd* poll_fds, char* suit, bool trick_o
             }
             // Message from user:
             if (poll_fds[1].revents & POLLIN) {
-                // tutaj handlujemy wiadomości od użytkownika
-                // handle_init_user_message();
-
-                ssize_t last_read_size;
-                char buffer[BUFFER_SIZE];
-                                                
-                int received_bytes = readn(poll_fds[1].fd, buffer, BUFFER_SIZE, &last_read_size);
-
+                std::string buffer = ""; 
+                int received_bytes = user_read_to_newline(poll_fds[1].fd, &buffer);
                 std::cerr << "waiting for trick\n";
             }
         }
@@ -964,7 +989,7 @@ void recv_trick(int socket_fd, struct pollfd* poll_fds, char* suit, bool trick_o
 }
 
 
-void recv_taken_or_wrong(int socket_fd, struct pollfd* poll_fds, bool* accepted, bool trick_one) {
+void recv_trick_response(int socket_fd, struct pollfd* poll_fds, bool* accepted, bool trick_one) {
 
     bool received = false;
 
@@ -994,12 +1019,14 @@ void recv_taken_or_wrong(int socket_fd, struct pollfd* poll_fds, bool* accepted,
                     int trick_number;
                     std::vector<Card> cards_taken;  // TODO: określić czy wypychać te parametry na zewnątrz
                     char taken_by;
+                    // TAKEN:
                     if (parse_taken(buffer, &trick_number, cards_taken, &taken_by, trick_one) == GOOD) {
                         std::cout << "trick " << trick_number << " taken by " << taken_by << "\n";
                         received = true;
                         *accepted = true;
                         break;
                     }
+                    // WRONG:
                     else if (parse_wrong(buffer, &trick_number) == GOOD) {
                         std::cerr << "received wrong (trick: " << trick_number << "), sending card again\n";
                         received = true;
@@ -1013,14 +1040,8 @@ void recv_taken_or_wrong(int socket_fd, struct pollfd* poll_fds, bool* accepted,
             }
             // Message from user:
             if (poll_fds[1].revents & POLLIN) {
-                // tutaj handlujemy wiadomości od użytkownika
-                // handle_init_user_message();
-
-                ssize_t last_read_size;
-                char buffer[BUFFER_SIZE];
-                                                
-                int received_bytes = readn(poll_fds[1].fd, buffer, BUFFER_SIZE, &last_read_size);
-
+                std::string buffer = ""; 
+                int received_bytes = user_read_to_newline(poll_fds[1].fd, &buffer);
                 std::cerr << "waiting for taken or wrong\n";
             }
         }
@@ -1029,6 +1050,119 @@ void recv_taken_or_wrong(int socket_fd, struct pollfd* poll_fds, bool* accepted,
         }
     } while (!received);
 }
+
+// Receives SCORE from server.
+void recv_score(int socket_fd, struct pollfd* poll_fds, int* scores) {
+
+    bool received = false;
+
+    do {
+        poll_fds[0].revents = 0;
+        poll_fds[1].revents = 0;
+
+        // Client can wait indefinitely:
+        int poll_status = poll(poll_fds, 2, -1); 
+        check_poll_error(poll_status);
+
+        if (poll_status > 0) {
+            // Message from server:
+            if (poll_fds[0].revents & POLLIN) {
+
+                ssize_t last_read_size;
+                std::string buffer = "";
+                                                
+                int received_bytes = read_to_newline(poll_fds[0].fd, &buffer);
+
+                if (received_bytes < 0) {
+                    throw std::runtime_error("couldn't receive the message, disconnecting\n");
+                } else if (received_bytes == 0) {
+                    throw std::runtime_error("server closed the connection\n");
+                } else {
+                    // coś odebrano - próbujemy parsować SCORE
+                    int scores[5];
+                    if (parse_score(buffer, scores) == GOOD) {
+                        std::cout << "received score\n";
+                        for (int i = 1; i <= 4; i++) {
+                            std::cout << "score " << i << ": " << scores[i] << "\n";
+                        }
+                        received = true;
+                        break;
+                    }
+                    else {
+                        // nie wiadomo co przyszło, czekamy dalej;
+                        std::cerr << "parsing score failed, waiting for another message\n";
+                    }
+                }
+            }
+            // Message from user:
+            if (poll_fds[1].revents & POLLIN) {
+                std::string buffer = ""; 
+                int received_bytes = user_read_to_newline(poll_fds[1].fd, &buffer);
+                std::cerr << "waiting for score\n";
+            }
+        }
+        else {
+            std::cout << "timeout...\n";
+        }
+    } while (!received);
+}
+
+// Receives TOTAL from server.
+void recv_total(int socket_fd, struct pollfd* poll_fds, int* total_scores) {
+
+    bool received = false;
+
+    do {
+        poll_fds[0].revents = 0;
+        poll_fds[1].revents = 0;
+
+        // Client can wait indefinitely:
+        int poll_status = poll(poll_fds, 2, -1); 
+        check_poll_error(poll_status);
+
+        if (poll_status > 0) {
+            // Message from server:
+            if (poll_fds[0].revents & POLLIN) {
+
+                ssize_t last_read_size;
+                std::string buffer = "";
+                                                
+                int received_bytes = read_to_newline(poll_fds[0].fd, &buffer);
+
+                if (received_bytes < 0) {
+                    throw std::runtime_error("couldn't receive the message, disconnecting\n");
+                } else if (received_bytes == 0) {
+                    throw std::runtime_error("server closed the connection\n");
+                } else {
+                    // coś odebrano - próbujemy parsować TOTAL
+                    int total[5];
+                    if (parse_total(buffer, total) == GOOD) {
+                        std::cout << "received score\n";
+                        for (int i = 1; i <= 4; i++) {
+                            std::cout << "score " << i << ": " << total[i] << "\n";
+                        }
+                        received = true;
+                        break;
+                    }
+                    else {
+                        // nie wiadomo co przyszło, czekamy dalej;
+                        std::cerr << "parsing total failed, waiting for another message\n";
+                    }
+                }
+            }
+            // Message from user:
+            if (poll_fds[1].revents & POLLIN) {
+                std::string buffer = ""; 
+                int received_bytes = user_read_to_newline(poll_fds[1].fd, &buffer);
+                std::cerr << "waiting for total\n";
+            }
+        }
+        else {
+            std::cout << "timeout...\n";
+        }
+    } while (!received);
+}
+
 
 // -------------------------------------- Game ------------------------------------------
 
@@ -1044,27 +1178,48 @@ void play_game(int socket_fd, struct pollfd* poll_fds, int s_round_type, char s_
         // początek rozdania, odbierz DEAL:
         if (round_number != 0) {
             hand.cards.clear();
-            recv_deal(socket_fd, poll_fds, &round_type, &starting_player, hand);
+            try {
+                recv_deal(socket_fd, poll_fds, &round_type, &starting_player, hand);
+            } catch (const std::exception& e) {
+                std::cout << "error format: " << e.what() << "\n";
+                if (strcmp(e.what(), "finished") == 0) {
+                    std::cout << "game finished, writing raport:\n";
+                    break;
+                } else {
+                    throw std::runtime_error("error in recv_deal");
+                }
+            }
         }
-        // rozegraj 13 lew:
+
+        bool early_finish = false;
+        int scores[5];
+        int total_scores[5];
+        
         for (int l = 1; l <= TRICKS_IN_ROUND; l++) {
+            
             bool accepted = false;
             char suit = 'X';
-            recv_trick(socket_fd, poll_fds, &suit, (l == 1));
-            do {
-                sleep(1); // test
-                // Try sending TRICK:
-                send_trick(socket_fd, poll_fds, hand, l, suit);
-                recv_taken_or_wrong(socket_fd, poll_fds, &accepted, (l == 1)); 
-            } while (!accepted);
-        }
-        // recv_score();
-        // recv_total();
-        round_number++;
+            recv_trick_or_score(socket_fd, poll_fds, &suit, (l == 1), &early_finish, scores, total_scores);
+            
+            if (!early_finish) {
 
-        // test:
-        std::cout << "game finished\n";
-        break;
+                do {
+                    sleep(2); // test
+                    // Try sending TRICK:
+                    send_trick(socket_fd, poll_fds, hand, l, suit);
+                    recv_trick_response(socket_fd, poll_fds, &accepted, (l == 1)); 
+                } while (!accepted);
+            
+            } else {
+                break;
+            }
+        }
+        if (!early_finish) {
+            recv_score(socket_fd, poll_fds, scores);
+            recv_total(socket_fd, poll_fds, total_scores);
+        }
+        round_number++;
+        // można też wypisać scores i total_scores, przyda się w kliencie manualnym
     }
 }
 
