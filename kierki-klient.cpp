@@ -793,7 +793,8 @@ void send_trick(int socket_fd, struct pollfd* poll_fds, Hand& hand, int trick_nu
 // TODO: edgecases (polerr, pollhup, ...) in all receivers
 
 // Receives first message from the server to determine if server accepted a request.
-bool recv_busy_or_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, char* starting_player, Hand& hand) {
+bool recv_busy_or_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, char* starting_player,
+                       Hand& hand, int* first_trick, bool* got_trick_in_initialization) {
 
     bool received = false;
 
@@ -829,6 +830,17 @@ bool recv_busy_or_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, 
                         // tutaj serwer może rzucać komunikatami TAKEN, bo możemy
                         // podłączać się do aktualnej rozgrywki, więc czytamy do
                         // skutku - jeśli się nie uda sparsować TAKEN, to próbujemy parsować TRICK
+
+                        // tutaj odbieramy też ewentualne lewy (TAKENy), które rozegrał nasz poprzednik - zaczynamy
+                        // rozgrywkę od lewy która wynika z otrzymanych wiadomości
+
+                        // 1. odbierz w pętli wszystkie komunikaty TAKEN
+                        // hand.cards.remove(znajdź naszą kartę w komunikacie TAKEN)
+                        // 2. jeśli otrzymasz TRICK to wyjdź i ustaw received = true i numer lewy na ten otrzymany
+                        // *first_trick = sparsowany z wiadomości od serwera;
+                        // *got_trick_in_initialization = true;
+                        // 3. zapisz numer lewy na zmiennej którą przekażesz do kolejnej funkcji
+                        // 4. ewentualnie ustaw coś boolowskiego (chociaż może nie trzeba, bo gracz liczy sobie rundy)
 
                         // na razie implementujemy tylko grę od początku do końca
                         std::cout << "received deal, starting game\n";
@@ -969,6 +981,19 @@ void recv_trick_or_score(int socket_fd, struct pollfd* poll_fds, char* suit, boo
                             std::cerr << "error parsing early total\n";
                         }
                     }
+                    // TOTAL + SCORE:
+                    else if (parse_total(buffer, total_scores) == GOOD) {
+                        std::cout << "received total\n";
+                        received_bytes = read_to_newline(poll_fds[0].fd, &buffer);
+                        if (parse_score(buffer, scores) == GOOD) {
+                            std::cout << "received score\n";
+                            received = true;
+                            *early_finish = true;
+                            break;
+                        } else {
+                            std::cerr << "error parsing early score\n";
+                        }
+                    }
                     else {
                         // nie wiadomo co przyszło, czekamy dalej;
                         std::cerr << "parsing trick failed, waiting for another message\n";
@@ -1034,7 +1059,8 @@ void recv_trick_response(int socket_fd, struct pollfd* poll_fds, bool* accepted,
                     }
                     else {
                         // nie wiadomo co przyszło, czekamy dalej;
-                        std::cerr << "parsing taken/wrong failed, waiting for another message\n";
+                        std::cerr << "parsing taken/wrong failed, trying to send TRICK again\n";
+                        break;
                     }
                 }
             }
@@ -1051,8 +1077,8 @@ void recv_trick_response(int socket_fd, struct pollfd* poll_fds, bool* accepted,
     } while (!received);
 }
 
-// Receives SCORE from server.
-void recv_score(int socket_fd, struct pollfd* poll_fds, int* scores) {
+// Receives SCORE and TOTAL from server.
+void recv_score_and_total(int socket_fd, struct pollfd* poll_fds, int* scores, int* total_scores) {
 
     bool received = false;
 
@@ -1078,19 +1104,33 @@ void recv_score(int socket_fd, struct pollfd* poll_fds, int* scores) {
                 } else if (received_bytes == 0) {
                     throw std::runtime_error("server closed the connection\n");
                 } else {
-                    // coś odebrano - próbujemy parsować SCORE
-                    int scores[5];
+                    // SCORE + TOTAL:
                     if (parse_score(buffer, scores) == GOOD) {
                         std::cout << "received score\n";
-                        for (int i = 1; i <= 4; i++) {
-                            std::cout << "score " << i << ": " << scores[i] << "\n";
+                        received_bytes = read_to_newline(poll_fds[0].fd, &buffer);
+                        if (parse_total(buffer, total_scores) == GOOD) {
+                            std::cout << "received total\n";
+                            received = true;
+                            break;
+                        } else {
+                            std::cerr << "error parsing total\n";
                         }
-                        received = true;
-                        break;
+                    }
+                    // TOTAL + SCORE:
+                    else if (parse_total(buffer, total_scores) == GOOD) {
+                        std::cout << "received total\n";
+                        received_bytes = read_to_newline(poll_fds[0].fd, &buffer);
+                        if (parse_score(buffer, scores) == GOOD) {
+                            std::cout << "received score\n";
+                            received = true;
+                            break;
+                        } else {
+                            std::cerr << "error parsing score\n";
+                        }
                     }
                     else {
                         // nie wiadomo co przyszło, czekamy dalej;
-                        std::cerr << "parsing score failed, waiting for another message\n";
+                        std::cerr << "parsing score/total failed, waiting for another message\n";
                     }
                 }
             }
@@ -1106,6 +1146,7 @@ void recv_score(int socket_fd, struct pollfd* poll_fds, int* scores) {
         }
     } while (!received);
 }
+
 
 // Receives TOTAL from server.
 void recv_total(int socket_fd, struct pollfd* poll_fds, int* total_scores) {
@@ -1167,7 +1208,8 @@ void recv_total(int socket_fd, struct pollfd* poll_fds, int* total_scores) {
 // -------------------------------------- Game ------------------------------------------
 
 // Manages player in game.
-void play_game(int socket_fd, struct pollfd* poll_fds, int s_round_type, char s_starting_player, Hand& hand) {
+void play_game(int socket_fd, struct pollfd* poll_fds, int s_round_type, char s_starting_player, Hand& hand,
+               int first_trick, bool got_trick_in_initialization) {
 
     int round_type = s_round_type;
     char starting_player = s_starting_player;
@@ -1176,6 +1218,10 @@ void play_game(int socket_fd, struct pollfd* poll_fds, int s_round_type, char s_
 
     while (true) {
         // początek rozdania, odbierz DEAL:
+        
+        // tutaj może się przydać first_trick jeśli wchodzimy w środek gry
+        // int first_trick = 1;
+
         if (round_number != 0) {
             hand.cards.clear();
             try {
@@ -1195,16 +1241,21 @@ void play_game(int socket_fd, struct pollfd* poll_fds, int s_round_type, char s_
         int scores[5];
         int total_scores[5];
         
-        for (int l = 1; l <= TRICKS_IN_ROUND; l++) {
+        for (int l = first_trick; l <= TRICKS_IN_ROUND; l++) {
             
+            first_trick = 1; // After using first_trick set it to a default value.
             bool accepted = false;
             char suit = 'X';
-            recv_trick_or_score(socket_fd, poll_fds, &suit, (l == 1), &early_finish, scores, total_scores);
+            if (!got_trick_in_initialization) {
+                recv_trick_or_score(socket_fd, poll_fds, &suit, (l == 1), &early_finish, scores, total_scores);
+            }
+
+            got_trick_in_initialization = false;
             
             if (!early_finish) {
 
                 do {
-                    sleep(2); // test
+                    sleep(1); // test
                     // Try sending TRICK:
                     send_trick(socket_fd, poll_fds, hand, l, suit);
                     recv_trick_response(socket_fd, poll_fds, &accepted, (l == 1)); 
@@ -1215,8 +1266,9 @@ void play_game(int socket_fd, struct pollfd* poll_fds, int s_round_type, char s_
             }
         }
         if (!early_finish) {
-            recv_score(socket_fd, poll_fds, scores);
-            recv_total(socket_fd, poll_fds, total_scores);
+            recv_score_and_total(socket_fd, poll_fds, scores, total_scores);
+            //recv_score(socket_fd, poll_fds, scores);
+            //recv_total(socket_fd, poll_fds, total_scores);
         }
         round_number++;
         // można też wypisać scores i total_scores, przyda się w kliencie manualnym
@@ -1270,7 +1322,9 @@ int main(int argc, char** argv) {
         send_iam(socket_fd, place);
         
         // Determine if we are accepted to join the game:
-        if (recv_busy_or_deal(socket_fd, poll_fds, &round_type, &starting_player, hand)) {
+        int first_trick = 1;
+        bool got_trick_in_initialization = false;
+        if (recv_busy_or_deal(socket_fd, poll_fds, &round_type, &starting_player, hand, &first_trick, &got_trick_in_initialization)) {
             std::cout << "received deal, round parameters\n";
             std::cout << "round type: " << round_type << "\n";
             std::cout << "starting player: " << starting_player << "\n";
@@ -1279,7 +1333,7 @@ int main(int argc, char** argv) {
                 std::cout << card.value << card.suit << " ";
             }
             std::cout << "\n";
-            play_game(socket_fd, poll_fds, round_type, starting_player, hand);
+            play_game(socket_fd, poll_fds, round_type, starting_player, hand, first_trick, got_trick_in_initialization);
         } else {
             std::cout << "received busy, disconnecting\n";
         }
