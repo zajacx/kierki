@@ -81,6 +81,15 @@ struct Hand {
             cards.erase(it);
         }
     }
+
+    void remove_cards_in_taken(const std::vector<Card>& cards_in_taken) {
+        for (const auto& table_card : cards_in_taken) {
+            auto it = std::find(cards.begin(), cards.end(), table_card);
+            if (it != cards.end()) {
+                cards.erase(it);
+            }
+        }
+    }
 };
 
 struct Round {
@@ -794,7 +803,7 @@ void send_trick(int socket_fd, struct pollfd* poll_fds, Hand& hand, int trick_nu
 
 // Receives first message from the server to determine if server accepted a request.
 bool recv_busy_or_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, char* starting_player,
-                       Hand& hand, int* first_trick, bool* got_trick_in_initialization) {
+                       Hand& hand, int* first_trick, char* first_suit) {
 
     bool received = false;
 
@@ -827,12 +836,38 @@ bool recv_busy_or_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, 
                     // coś odebrano - próbujemy parsować BUSY albo DEAL
                     std::vector<char> busy_places;
                     if (parse_deal(buffer, round_type, starting_player, hand) == GOOD) {
-                        // tutaj serwer może rzucać komunikatami TAKEN, bo możemy
-                        // podłączać się do aktualnej rozgrywki, więc czytamy do
-                        // skutku - jeśli się nie uda sparsować TAKEN, to próbujemy parsować TRICK
+                        // Po odebraniu DEAL mamy 13 kart.
+                        std::cout << "Got DEAL, joining game\n";
+                        bool got_trick = false;
+                        bool trick_one = true;
+                        do {
+                            // Próbujemy odbierać TAKEN albo TRICK:
+                            buffer = "";
+                            received_bytes = read_to_newline(poll_fds[0].fd, &buffer);
+                            // TAKEN:
+                            int parsed_trick_number;
+                            std::vector<Card> cards_in_taken;
+                            std::vector<Card> cards_on_table;
+                            char taken_by;
+                            if (parse_taken(buffer, &parsed_trick_number, cards_in_taken, &taken_by, trick_one) == GOOD) {
+                                trick_one = false;
+                                hand.remove_cards_in_taken(cards_in_taken);
+                                (*first_trick)++; // after each taken we are at different trick
+                                std::cout << "received taken from trick " << parsed_trick_number << "\n";
+                            }
+                            // TRICK:
+                            else if (parse_trick(buffer, &parsed_trick_number, cards_on_table, trick_one) == GOOD) {
+                                std::cout << "received trick\n";
+                                if (cards_on_table.size() != 0) {
+                                    *first_suit = cards_on_table[0].suit;
+                                }
+                                if (parsed_trick_number == *first_trick) {
+                                    std::cout << "GOOD! starting from trick " << parsed_trick_number << "\n";
+                                }
+                                got_trick = true;
+                            }
 
-                        // tutaj odbieramy też ewentualne lewy (TAKENy), które rozegrał nasz poprzednik - zaczynamy
-                        // rozgrywkę od lewy która wynika z otrzymanych wiadomości
+                        } while (!got_trick);
 
                         // 1. odbierz w pętli wszystkie komunikaty TAKEN
                         // hand.cards.remove(znajdź naszą kartę w komunikacie TAKEN)
@@ -843,7 +878,7 @@ bool recv_busy_or_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, 
                         // 4. ewentualnie ustaw coś boolowskiego (chociaż może nie trzeba, bo gracz liczy sobie rundy)
 
                         // na razie implementujemy tylko grę od początku do końca
-                        std::cout << "received deal, starting game\n";
+                        std::cout << "received first trick, starting game\n";
                         received = true;
                         break;
                     }
@@ -1209,12 +1244,13 @@ void recv_total(int socket_fd, struct pollfd* poll_fds, int* total_scores) {
 
 // Manages player in game.
 void play_game(int socket_fd, struct pollfd* poll_fds, int s_round_type, char s_starting_player, Hand& hand,
-               int first_trick, bool got_trick_in_initialization) {
+               int first_trick, char first_suit) {
 
     int round_type = s_round_type;
     char starting_player = s_starting_player;
     
     int round_number = 0;
+    bool first = true; // pierwsza rozegrana przez nas lewa w rozgrywce, trick dostaliśmy w inicjalizacji
 
     while (true) {
         // początek rozdania, odbierz DEAL:
@@ -1243,14 +1279,15 @@ void play_game(int socket_fd, struct pollfd* poll_fds, int s_round_type, char s_
         
         for (int l = first_trick; l <= TRICKS_IN_ROUND; l++) {
             
-            first_trick = 1; // After using first_trick set it to a default value.
             bool accepted = false;
             char suit = 'X';
-            if (!got_trick_in_initialization) {
+
+            if (first) {
+                suit = first_suit;
+                first = false;
+            } else {
                 recv_trick_or_score(socket_fd, poll_fds, &suit, (l == 1), &early_finish, scores, total_scores);
             }
-
-            got_trick_in_initialization = false;
             
             if (!early_finish) {
 
@@ -1271,6 +1308,7 @@ void play_game(int socket_fd, struct pollfd* poll_fds, int s_round_type, char s_
             //recv_total(socket_fd, poll_fds, total_scores);
         }
         round_number++;
+        first_trick = 1; // After using first_trick set it to a default value.
         // można też wypisać scores i total_scores, przyda się w kliencie manualnym
     }
 }
@@ -1323,8 +1361,8 @@ int main(int argc, char** argv) {
         
         // Determine if we are accepted to join the game:
         int first_trick = 1;
-        bool got_trick_in_initialization = false;
-        if (recv_busy_or_deal(socket_fd, poll_fds, &round_type, &starting_player, hand, &first_trick, &got_trick_in_initialization)) {
+        char first_suit = 'X';
+        if (recv_busy_or_deal(socket_fd, poll_fds, &round_type, &starting_player, hand, &first_trick, &first_suit)) {
             std::cout << "received deal, round parameters\n";
             std::cout << "round type: " << round_type << "\n";
             std::cout << "starting player: " << starting_player << "\n";
@@ -1333,7 +1371,7 @@ int main(int argc, char** argv) {
                 std::cout << card.value << card.suit << " ";
             }
             std::cout << "\n";
-            play_game(socket_fd, poll_fds, round_type, starting_player, hand, first_trick, got_trick_in_initialization);
+            play_game(socket_fd, poll_fds, round_type, starting_player, hand, first_trick, first_suit);
         } else {
             std::cout << "received busy, disconnecting\n";
         }
