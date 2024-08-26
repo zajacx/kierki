@@ -815,7 +815,7 @@ void send_busy(int socket_fd, bool* is_place_occupied) {
 }
 
 // Sends DEAL<round type><starting player><card list> message to the client.
-void send_deal(int socket_fd, int round_type, char starting_player, std::string card_string) {
+void send_deal(int socket_fd, int round_type, char starting_player, std::string card_string, std::string* deal_msg) {
 
     std::string message = "DEAL";
 
@@ -824,6 +824,7 @@ void send_deal(int socket_fd, int round_type, char starting_player, std::string 
     message += card_string;
 
     message += "\r\n";
+    *deal_msg = message;
 
     ssize_t written_bytes = writen(socket_fd, message.c_str(), message.length());
     if (written_bytes <= 0) {
@@ -865,7 +866,7 @@ void send_wrong(int socket_fd, int trick_number) {
 }
 
 // Sends TAKEN<trick number><card list><trick winner> message to the client.
-void send_taken(int socket_fd, int trick_number, std::vector<Card>& cards_on_table, int winner) {
+void send_taken(int socket_fd, int trick_number, std::vector<Card>& cards_on_table, int winner, std::string* msg) {
 
     std::string message = "TAKEN";
 
@@ -876,6 +877,7 @@ void send_taken(int socket_fd, int trick_number, std::vector<Card>& cards_on_tab
     message += std::string(1, map_int_to_place_name[winner]);
 
     message += "\r\n";
+    *msg = message;
 
     ssize_t written_bytes = writen(socket_fd, message.c_str(), message.length());
     if (written_bytes <= 0) {
@@ -924,18 +926,23 @@ void send_total(int socket_fd, struct ClientInfo* clients) {
 
 // Calls send_deal() for each player.
 void broadcast_deal(struct ClientInfo* clients, int round_type, 
-                    char starting_player, std::string* card_strings) {
+                    char starting_player, std::string* card_strings, std::vector<std::string>& deals_sent) {
     for (int i = 1; i <= 4; i++) {
-        send_deal(clients[i].fd, round_type, starting_player, card_strings[i]);
+        std::string message;
+        send_deal(clients[i].fd, round_type, starting_player, card_strings[i], &message);
+        deals_sent.push_back(message);
     }
+    
 }
 
 // Calls send_taken() for each player.
 void broadcast_taken(struct ClientInfo* clients, int trick_number,
-                     std::vector<Card> cards_on_table, int winner) {
+                     std::vector<Card> cards_on_table, int winner, std::vector<std::string>& takens_sent) {
+    std::string message;
     for (int i = 1; i <= 4; i++) {
-        send_taken(clients[i].fd, trick_number, cards_on_table, winner);
+        send_taken(clients[i].fd, trick_number, cards_on_table, winner, &message);
     }
+    takens_sent.push_back(message);
 }
 
 // Calls send_score() for each player.
@@ -1288,9 +1295,11 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
         int type = round.round_type;                        // Round type (1-7).
         int points_left = points_in_total[type];            // Points to distribute among players.
         struct RoundPoints points = round_points[type];     // Rules of distributing points.
+        std::vector<std::string> takens_sent;               // Vector of all sent TAKEN messages.
+        std::vector<std::string> deals_sent;                // Vector of all sent DEAL messages.
         
         // Start the round:
-        broadcast_deal(clients, type, round.starting_player, round.card_strings);
+        broadcast_deal(clients, type, round.starting_player, round.card_strings, deals_sent);
         std::cout << "sent deal to each client\n";
         sleep(2); // test
 
@@ -1531,6 +1540,20 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                                             clear_client_info(clients, j);
                                             clear_descriptor(poll_fds, j);
                                             // tutaj wysyłamy wszystkie komunikaty żeby ktoś mógł wrócić do gry
+                                            // DEAL w tym rozdaniu (dla tego gracza):
+                                            std::string deal_msg = deals_sent[p - 1];
+                                            ssize_t written_bytes = writen(poll_fds[p].fd, deal_msg.c_str(), deal_msg.length());
+                                            if (written_bytes <= 0) {
+                                                throw std::runtime_error("writen (deal for new player)");
+                                            }
+                                            // wszystkie komunikaty TAKEN:
+                                            for (std::string msg : takens_sent) {
+                                                written_bytes = writen(poll_fds[p].fd, msg.c_str(), msg.length());
+                                                if (written_bytes <= 0) {
+                                                    throw std::runtime_error("writen (taken for new player)");
+                                                }
+                                            }
+
                                         } else {
                                             std::cerr << "new client tried to occupy a busy place\n";
                                             send_busy(poll_fds[j].fd, is_place_occupied);
@@ -1616,7 +1639,7 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                 
             }
 
-            broadcast_taken(clients, l, cards_on_table, winner);
+            broadcast_taken(clients, l, cards_on_table, winner, takens_sent);
 
             // Przyznaj punkty:
             if (type == 1 || type == 7) {

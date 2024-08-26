@@ -780,7 +780,7 @@ void send_trick(int socket_fd, struct pollfd* poll_fds, Hand& hand, int trick_nu
         value = hand.cards[0].value;
     }
 
-    hand.remove_card(value, suit);
+    // hand.remove_card(value, suit);
 
     message += value;
     message += std::string(1, suit);
@@ -865,6 +865,9 @@ bool recv_busy_or_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, 
                                     std::cout << "GOOD! starting from trick " << parsed_trick_number << "\n";
                                 }
                                 got_trick = true;
+                            } else {
+                                std::cerr << "what is going oooon\n";
+                                break;
                             }
 
                         } while (!got_trick);
@@ -1049,7 +1052,7 @@ void recv_trick_or_score(int socket_fd, struct pollfd* poll_fds, char* suit, boo
 }
 
 
-void recv_trick_response(int socket_fd, struct pollfd* poll_fds, bool* accepted, bool trick_one) {
+void recv_trick_response(int socket_fd, struct pollfd* poll_fds, bool* accepted, Hand& hand, bool trick_one) {
 
     bool received = false;
 
@@ -1084,6 +1087,7 @@ void recv_trick_response(int socket_fd, struct pollfd* poll_fds, bool* accepted,
                         std::cout << "trick " << trick_number << " taken by " << taken_by << "\n";
                         received = true;
                         *accepted = true;
+                        hand.remove_cards_in_taken(cards_taken);
                         break;
                     }
                     // WRONG:
@@ -1295,7 +1299,7 @@ void play_game(int socket_fd, struct pollfd* poll_fds, int s_round_type, char s_
                     sleep(1); // test
                     // Try sending TRICK:
                     send_trick(socket_fd, poll_fds, hand, l, suit);
-                    recv_trick_response(socket_fd, poll_fds, &accepted, (l == 1)); 
+                    recv_trick_response(socket_fd, poll_fds, &accepted, hand, (l == 1)); 
                 } while (!accepted);
             
             } else {
