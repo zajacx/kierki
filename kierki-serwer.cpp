@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <regex>
@@ -219,6 +220,35 @@ struct Game {
 
     void add_round(const Round& round) {
         rounds.push_back(round);
+    }
+};
+
+// COMMON
+struct Logs {
+    std::vector<std::string> logs;
+
+    void add(std::string from, std::string to, TimePoint time_point, std::string log_message) {
+
+        auto system_time_point = std::chrono::system_clock::now() + (time_point - Clock::now());
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(system_time_point.time_since_epoch()) % 1000;
+        std::time_t time_t = std::chrono::system_clock::to_time_t(system_time_point);
+        std::tm tm = *std::gmtime(&time_t);
+
+        std::ostringstream oss;
+        oss << std::put_time(&tm, "%Y-%m-%dT%H:%M:%S") 
+            << '.' << std::setw(3) << std::setfill('0') << ms.count();
+
+        std::string formatted_time = oss.str();
+
+        std::string log_entry = "[" + from + "," + to + "," + formatted_time + "] " + log_message;
+
+        logs.push_back(log_entry);
+    }
+
+    void write_to_stdout() {
+        for (std::string log : logs) {
+            std::cout << log;
+        }
     }
 };
 
@@ -705,10 +735,12 @@ int read_to_newline(int descriptor, std::string* result) {
 // --------------------------------------------------------------------------------------
 
 // Parser for a message of type: IAM<place>\r\n.
-int parse_iam(const std::string& message, char* result) {
+int parse_iam(const std::string& message, char* result, Logs& logs, std::string from, std::string to) {
 
     std::regex pattern(R"(IAM([NESW])\r\n)");
     std::smatch match;
+
+    logs.add(from, to, Clock::now(), message);
 
     if (std::regex_match(message, match, pattern)) {
         *result = match[1].str()[0];
@@ -720,10 +752,12 @@ int parse_iam(const std::string& message, char* result) {
 
 // Parser for a message of type: TRICK<trick number><card>\r\n.
 int parse_trick(const std::string& message, int trick_number,
-                std::string* value, char* suit) {
+                std::string* value, char* suit, Logs& logs, std::string from, std::string to) {
     
     std::regex pattern(R"(TRICK([1-9]|1[0-3])(10|[2-9]|[JQKA])([CDHS])\r\n)");
     std::smatch match;
+
+    logs.add(from, to, Clock::now(), message);
 
     if (std::regex_match(message, match, pattern)) {
         if (std::stoi(match[1].str()) == trick_number) {
@@ -796,7 +830,7 @@ void print_clients(struct ClientInfo* clients) {
 // ---------------------------------- Sending messages ----------------------------------
 
 // Sends BUSY<place list> message to the client.
-void send_busy(int socket_fd, bool* is_place_occupied) {
+void send_busy(int socket_fd, bool* is_place_occupied, Logs& logs, std::string from, std::string to) {
     
     std::string message = "BUSY";
     
@@ -812,10 +846,13 @@ void send_busy(int socket_fd, bool* is_place_occupied) {
     if (written_bytes <= 0) {
         throw std::runtime_error("writen (busy)");
     }
+
+    logs.add(from, to, Clock::now(), message);
 }
 
 // Sends DEAL<round type><starting player><card list> message to the client.
-void send_deal(int socket_fd, int round_type, char starting_player, std::string card_string, std::string* deal_msg) {
+void send_deal(int socket_fd, int round_type, char starting_player, std::string card_string,
+               std::string* deal_msg, Logs& logs, std::string from, std::string to) {
 
     std::string message = "DEAL";
 
@@ -830,10 +867,13 @@ void send_deal(int socket_fd, int round_type, char starting_player, std::string 
     if (written_bytes <= 0) {
         throw std::runtime_error("writen (deal)");
     }
+
+    logs.add(from, to, Clock::now(), message);
 }
 
 // Sends TRICK<trick number><card list> message to the client.
-void send_trick(int socket_fd, int trick_number, std::vector<Card>& cards_on_table) {
+void send_trick(int socket_fd, int trick_number, std::vector<Card>& cards_on_table,
+                Logs& logs, std::string from, std::string to) {
 
     std::string message = "TRICK";
 
@@ -848,10 +888,12 @@ void send_trick(int socket_fd, int trick_number, std::vector<Card>& cards_on_tab
     if (written_bytes <= 0) {
         throw std::runtime_error("writen (trick)");
     }
+
+    logs.add(from, to, Clock::now(), message);
 }
 
 // Sends WRONG<trick number> message to the client.
-void send_wrong(int socket_fd, int trick_number) {
+void send_wrong(int socket_fd, int trick_number, Logs& logs, std::string from, std::string to) {
 
     std::string message = "WRONG";
 
@@ -863,10 +905,13 @@ void send_wrong(int socket_fd, int trick_number) {
     if (written_bytes <= 0) {
         throw std::runtime_error("writen (wrong)");
     }
+
+    logs.add(from, to, Clock::now(), message);
 }
 
 // Sends TAKEN<trick number><card list><trick winner> message to the client.
-void send_taken(int socket_fd, int trick_number, std::vector<Card>& cards_on_table, int winner, std::string* msg) {
+void send_taken(int socket_fd, int trick_number, std::vector<Card>& cards_on_table, int winner,
+                std::string* msg, Logs& logs, std::string from, std::string to) {
 
     std::string message = "TAKEN";
 
@@ -883,10 +928,13 @@ void send_taken(int socket_fd, int trick_number, std::vector<Card>& cards_on_tab
     if (written_bytes <= 0) {
         throw std::runtime_error("writen (taken)");
     }
+
+    logs.add(from, to, Clock::now(), message);
 }
 
 // Sends SCORE<player><points>...<player><points> message to the client.
-void send_score(int socket_fd, struct ClientInfo* clients) {
+void send_score(int socket_fd, struct ClientInfo* clients,
+                Logs& logs, std::string from, std::string to) {
 
     std::string message = "SCORE";
 
@@ -901,10 +949,13 @@ void send_score(int socket_fd, struct ClientInfo* clients) {
     if (written_bytes <= 0) {
         throw std::runtime_error("writen (score)");
     }
+
+    logs.add(from, to, Clock::now(), message);
 }
 
 // Sends TOTAL<player><points>...<player><points> message to the client.
-void send_total(int socket_fd, struct ClientInfo* clients) {
+void send_total(int socket_fd, struct ClientInfo* clients,
+                Logs& logs, std::string from, std::string to) {
 
     std::string message = "TOTAL";
 
@@ -919,43 +970,45 @@ void send_total(int socket_fd, struct ClientInfo* clients) {
     if (written_bytes <= 0) {
         throw std::runtime_error("writen (total)");
     }
+
+    logs.add(from, to, Clock::now(), message);
 }
 
 
 // ------------------------------- Broadcasting messages --------------------------------
 
 // Calls send_deal() for each player.
-void broadcast_deal(struct ClientInfo* clients, int round_type, 
-                    char starting_player, std::string* card_strings, std::vector<std::string>& deals_sent) {
+void broadcast_deal(struct ClientInfo* clients, int round_type, char starting_player, std::string* card_strings,
+                    std::vector<std::string>& deals_sent, Logs& logs, std::string from) {
     for (int i = 1; i <= 4; i++) {
         std::string message;
-        send_deal(clients[i].fd, round_type, starting_player, card_strings[i], &message);
+        send_deal(clients[i].fd, round_type, starting_player, card_strings[i], &message, logs, from, clients[i].ip_and_port);
         deals_sent.push_back(message);
     }
     
 }
 
 // Calls send_taken() for each player.
-void broadcast_taken(struct ClientInfo* clients, int trick_number,
-                     std::vector<Card> cards_on_table, int winner, std::vector<std::string>& takens_sent) {
+void broadcast_taken(struct ClientInfo* clients, int trick_number, std::vector<Card> cards_on_table, int winner,
+                     std::vector<std::string>& takens_sent, Logs& logs, std::string from) {
     std::string message;
     for (int i = 1; i <= 4; i++) {
-        send_taken(clients[i].fd, trick_number, cards_on_table, winner, &message);
+        send_taken(clients[i].fd, trick_number, cards_on_table, winner, &message, logs, from, clients[i].ip_and_port);
     }
     takens_sent.push_back(message);
 }
 
 // Calls send_score() for each player.
-void broadcast_score(struct ClientInfo* clients) {
+void broadcast_score(struct ClientInfo* clients, Logs& logs, std::string from) {
     for (int i = 1; i <= 4; i++) {
-        send_score(clients[i].fd, clients);
+        send_score(clients[i].fd, clients, logs, from, clients[i].ip_and_port);
     }
 }
 
 // Calls send_total() for each player.
-void broadcast_total(struct ClientInfo* clients) {
+void broadcast_total(struct ClientInfo* clients, Logs& logs, std::string from) {
     for (int i = 1; i <= 4; i++) {
-        send_total(clients[i].fd, clients);
+        send_total(clients[i].fd, clients, logs, from, clients[i].ip_and_port);
     }
 }
 
@@ -963,7 +1016,8 @@ void broadcast_total(struct ClientInfo* clients) {
 // ---------------------------------- Event handlers ------------------------------------
 
 // Handles an event (client's connection request) on main descriptor.
-void handle_new_client_request(int* active_clients, struct pollfd* poll_fds, struct ClientInfo* clients) {
+void handle_new_client_request(int* active_clients, struct pollfd* poll_fds, struct ClientInfo* clients,
+                               Logs& logs, std::string from) {
     if (*active_clients < PLAYERS) {
         accept_client(poll_fds, clients);
         (*active_clients)++;
@@ -975,16 +1029,20 @@ void handle_new_client_request(int* active_clients, struct pollfd* poll_fds, str
         if (temp_fd < 0) {
             std::cerr << "Couldn't accept client\n";
         }
+        uint16_t client_port;
+        std::string client_ip_and_port;
+        get_client_ip(temp_fd, &client_port, &client_ip_and_port);
+        
         bool oc[] = {true, true, true, true, true};
         std::cerr << "new connection rejected because there is no empty place\n";
-        send_busy(temp_fd, oc);
+        send_busy(temp_fd, oc, logs, from, client_ip_and_port);
         close(temp_fd);
     }
 }
 
 // Handles an event (new message) on given (i-th) descriptor.
 void handle_pollin(struct pollfd* poll_fds, int i, struct ClientInfo* clients,
-                   int* active_clients, int* ready, bool* is_place_occupied) {
+                   int* active_clients, int* ready, bool* is_place_occupied, Logs& logs, std::string from) {
     
     ssize_t last_read_size;
     std::string buffer = "";
@@ -1001,7 +1059,7 @@ void handle_pollin(struct pollfd* poll_fds, int i, struct ClientInfo* clients,
         std::cout << "received " << received_bytes << " bytes within connection (id: " << i << ")\n";
         std::cout << "parsing message: " << buffer << "\n";
         char place;
-        if (parse_iam(buffer, &place) == 0) {
+        if (parse_iam(buffer, &place, logs, clients[i].ip_and_port, from) == 0) {
             std::cout << "received IAM" << place << "\n";
             get_occupied_places(clients, is_place_occupied);
             int p = map_place[place];
@@ -1009,17 +1067,14 @@ void handle_pollin(struct pollfd* poll_fds, int i, struct ClientInfo* clients,
                 clients[i].chosen_position = p;
                 (*ready)++;
             } else {
-                std::cerr << "odsylam busy w tym miejscu bo jestem zjebany vol. 2138\n";
-                send_busy(poll_fds[i].fd, is_place_occupied);
+                send_busy(poll_fds[i].fd, is_place_occupied, logs, from, clients[i].ip_and_port);
                 disconnect_client(poll_fds, clients, active_clients, ready, i);
                 std::cerr << "place busy: ending connection (id: " << i << ")\n";
             }
 
         } else {
-            // czy to jest na pewno to samo?
             close(poll_fds[i].fd);
             (*active_clients)--;
-            // if (clients[i].chosen_position != 0) ready--;
             clear_descriptor(poll_fds, i);
             clear_client_info(clients, i);
             std::cerr << "Wrong message from client (id: " << i << "), disconnected\n";
@@ -1030,18 +1085,9 @@ void handle_pollin(struct pollfd* poll_fds, int i, struct ClientInfo* clients,
 
 // ------------------------------ First part: connection --------------------------------
 
-/**
- * CONNECTION
- * - struct pollfd* ready_poll_fds is a pointer to an array of sorted clients data
- *   (according to their place choice) - filled by this function at the end.
- * - struct ClientInfo* ready_clients is similar but for other data.
- * - int timeout is a constant value given as an argument when starting the server.
- * - int socket_fd is a descriptor of the server.
- */
-
 // Create connections with all players.
 void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* ready_clients, 
-                          int timeout, int socket_fd) {
+                          int timeout, int socket_fd, Logs& logs, std::string from) {
 
     struct pollfd poll_fds[9];
     struct ClientInfo clients[9];
@@ -1066,19 +1112,11 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
         int poll_status = poll(poll_fds, 9, poll_timeout);
         check_poll_error(poll_status);
 
-        /*
-        DEBUG:
-        std::cout << "Poll descriptors array:\n";
-        for (int i = 0; i < POLL_SIZE; i++) {
-            std::cout << "fd=" << poll_fds[i].fd << " events=" << poll_fds[i].events << " revents=" << poll_fds[i].revents << "\n";
-        }
-        */
-
         if (poll_status > 0) {
             // New connection: new client is accepted.
             if (poll_fds[0].revents & POLLIN) {
 
-                handle_new_client_request(&active_clients, poll_fds, clients);
+                handle_new_client_request(&active_clients, poll_fds, clients, logs, from);
                 std::cout << "active_clients after connection: " << active_clients << "\n";
 
             }
@@ -1088,7 +1126,7 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
                 // POLLIN <=> received a message.
                 if (poll_fds[i].fd != -1 && (poll_fds[i].revents & POLLIN)) {
 
-                    handle_pollin(poll_fds, i, clients, &active_clients, &ready, is_place_occupied);
+                    handle_pollin(poll_fds, i, clients, &active_clients, &ready, is_place_occupied, logs, from);
                     
                 }
                 // POLLHUP <=> client disconnected by server - in case of some weird behaviour.
@@ -1126,10 +1164,10 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
         ready_clients[p].chosen_position = clients[i].chosen_position;
     }
 
-    // test:
-
+    // test
     print_poll_fds(ready_poll_fds);
     print_clients(ready_clients);
+    // test
 
     std::cout << "Connections established, game is starting...\n";
 }
@@ -1187,45 +1225,6 @@ void accept_client_in_game(struct pollfd* poll_fds, struct ClientInfo* clients) 
     clients[id].chosen_position = 0;
 }
 
-/*
-// Do tej funkcji przekazujemy poll_fds_tmp i clients_tmp.
-
-// Calculate the remaining time for each client and set poll's timeout.
-void calculate_remaining_time(struct pollfd* poll_fds, struct ClientInfo* clients, 
-                              int timeout, int* poll_timeout, int* active_clients, int* ready) {
-    int min_timeout = TIMEOUT;
-    TimePoint now = Clock::now();
-
-    for (int i = 1; i < POLL_SIZE; i++) {
-        
-        if (poll_fds[i].fd != -1 && clients[i].chosen_position == 0) {
-            // Client hasn't sent IAM, so calculate time left:
-            auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(now - clients[i].connection_time).count();
-            int time_left = timeout - elapsed_time;
-            std::cout << "time left for client " << i << ": " << time_left << "\n";
-
-            if (time_left <= 0) {
-                disconnect_client(poll_fds, clients, active_clients, ready, i);
-                std::cerr << "Time exceeded: ending connection (id: " << i << ")\n";
-            }
-            else if (time_left > 0 && time_left < min_timeout) {
-                min_timeout = time_left;
-            }
-        }
-    }
-
-    *poll_timeout = min_timeout;
-}
-*/
-
-/*
-ROZGRYWKA:
-Kolejne rozszerzenia:
-- poll() przy założeniu że wszyscy grają poprawnie i nikt się nie rozłącza - zrobione
-- dodać założenie że gracze przysyłają błędne komunikaty (tylko odsyłamy WRONG) - zrobione
-- dodać założenie że gracze są rozłączani / sami się rozłączają i trzeba
-  czekać na nowego gracza, który przyśle IAM
-*/
 
 /*
 DEBUG:
@@ -1257,7 +1256,8 @@ void disconnect_client_in_game(struct pollfd* poll_fds, struct ClientInfo* clien
 }
 
 // Handles an event (client's connection request) on main descriptor.
-void handle_new_client_request_in_game(int active_clients, struct pollfd* poll_fds, struct ClientInfo* clients) {
+void handle_new_client_request_in_game(int active_clients, struct pollfd* poll_fds,
+                                       struct ClientInfo* clients, Logs& logs, std::string from) {
     if (active_clients < PLAYERS) {
         accept_client_in_game(poll_fds, clients);
         std::cout << "Client accepted\n"; // test
@@ -1268,24 +1268,20 @@ void handle_new_client_request_in_game(int active_clients, struct pollfd* poll_f
         if (temp_fd < 0) {
             std::cerr << "Couldn't accept client\n";
         }
+        uint16_t client_port;
+        std::string client_ip_and_port;
+        get_client_ip(temp_fd, &client_port, &client_ip_and_port);
+        
         bool oc[] = {true, true, true, true, true};
         std::cerr << "new connection rejected because there is no empty place\n";
-        send_busy(temp_fd, oc);
+        send_busy(temp_fd, oc, logs, from, client_ip_and_port);
         close(temp_fd);
     }
 }
 
-/*
-POMYSŁ NA OBSŁUGĘ ROZŁĄCZEŃ:
-- trzymamy zmienną active_clients
-- pusty readn <=> rozłączenie się klienta
-- active_clients--;
-- zawieszamy rozgrywkę - jeśli active_clients < 4, to w pętli odbierającej nie parsujemy wiadomości
-- obsługujemy inne rozłączenia, aktualizujemy deskryptory, ClientsInfo i zmienną active_clients
-*/
-
 // Manages the game.
-void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients, int timeout) {
+void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients, int timeout,
+                  Logs& logs, std::string from) {
 
     int active_clients = PLAYERS;
 
@@ -1299,7 +1295,7 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
         std::vector<std::string> deals_sent;                // Vector of all sent DEAL messages.
         
         // Start the round:
-        broadcast_deal(clients, type, round.starting_player, round.card_strings, deals_sent);
+        broadcast_deal(clients, type, round.starting_player, round.card_strings, deals_sent, logs, from);
         std::cout << "sent deal to each client\n";
         sleep(2); // test
 
@@ -1323,7 +1319,7 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                 do {
                     // Send TRICK for the first time or after timeout.
                     if (trick_to_send) {
-                        send_trick(clients[player].fd, l, cards_on_table);
+                        send_trick(clients[player].fd, l, cards_on_table, logs, from, clients[player].ip_and_port);
                         last_send_time = Clock::now();
                         trick_to_send = false;
                     }
@@ -1341,7 +1337,7 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                         // New connection request:
                         if (poll_fds[0].revents & POLLIN) {
 
-                            handle_new_client_request_in_game(active_clients, poll_fds, clients);
+                            handle_new_client_request_in_game(active_clients, poll_fds, clients, logs, from);
 
                         }
                         // Serve connected clients - receive IAM or reject message/connection.
@@ -1356,15 +1352,13 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                                 int received_bytes = read_to_newline(poll_fds[j].fd, &buffer);
 
                                 if (received_bytes < 0) {
-                                    // ROZŁĄCZ W TRAKCIE GRY
-                                    // disconnect_client(poll_fds, clients, &active_clients, j);
-                                    //std::cerr << "readn failed: ending connection (id: " << j << ")\n";
+                                    // Error in readn, disconnecting:
+                                    std::cerr << "Error in readn from player " << map_int_to_place_name[j] << ". Waiting for a new player...\n";
+                                    disconnect_client_in_game(poll_fds, clients, &active_clients, j);
                                 } else if (received_bytes == 0) {
-                                    
                                     // Player has disconnected:
                                     std::cerr << "Player " << map_int_to_place_name[j] << " has left - waiting for a player...\n";
                                     disconnect_client_in_game(poll_fds, clients, &active_clients, j);
-
                                 } else {
                                     // Coś odebrano - przetwarzamy wiadomość (wiadomość od dobrego gracza lub nie)
                                     std::cout << "received " << received_bytes << " bytes within connection (id: " << j << ")\n";
@@ -1377,7 +1371,7 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                                             // Dobry gracz - próbujemy parsować
                                             std::string value;
                                             char suit;
-                                            int errcode = parse_trick(buffer, l, &value, &suit);
+                                            int errcode = parse_trick(buffer, l, &value, &suit, logs, clients[j].ip_and_port, from);
                                             if (errcode == GOOD) {
                                                 // Numer lewy się zgadza, sprawdzamy czy karta jest na ręce:
                                                 if (round.hands[j].contains(value, suit)) {
@@ -1430,38 +1424,36 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                                                             received = true;
                                                         } else {
                                                             // Jeśli nas okłamał, to wysyłamy wrong
-                                                            send_wrong(poll_fds[j].fd, l);
+                                                            send_wrong(poll_fds[j].fd, l, logs, from, clients[j].ip_and_port);
                                                         }
                                                     }
                                                 } else {
                                                     // Karty nie ma na ręce, wysyłamy wrong
                                                     std::cerr << "Player doesn't have this card\n";
-                                                    send_wrong(poll_fds[j].fd, l);
+                                                    send_wrong(poll_fds[j].fd, l, logs, from, clients[j].ip_and_port);
                                                 }
                                             } else if (errcode == 2) {
                                                 // Wiadomość się parsuje, ale numer lewy jest zły - WRONG
                                                 std::cerr << "Incorrect trick number\n";
-                                                send_wrong(poll_fds[j].fd, l);
+                                                send_wrong(poll_fds[j].fd, l, logs, from, clients[j].ip_and_port);
                                             } else {
-                                                // Wiadomość się nie parsuje, NIE WYSYŁAMY WRONG
-                                                // ROZŁĄCZ W TRAKCIE GRY
-                                                // disconnect_client(poll_fds, clients, &active_clients, j);
-                                                // std::cerr << "empty readn: ending connection (id: " << i << ")\n";
+                                                // Wiadomość się nie parsuje
+                                                std::cerr << "Incorrect message from player " << map_int_to_place_name[j] << " disconnected\n";
+                                                disconnect_client_in_game(poll_fds, clients, &active_clients, j);
                                             }
                                         } else {
                                             // Zły gracz wysyła wiadomość nieproszony - sprawdzamy czy wysłał TRICK
                                             std::string value;
                                             char suit;
-                                            int errcode = parse_trick(buffer, l, &value, &suit);
+                                            int errcode = parse_trick(buffer, l, &value, &suit, logs, clients[j].ip_and_port, from);
                                             if (errcode == GOOD || errcode == 2) {
                                                 // Parsuje się, odsyłamy WRONG
                                                 std::cerr << "TRICK received from incorrect player\n";
-                                                send_wrong(poll_fds[j].fd, l);
+                                                send_wrong(poll_fds[j].fd, l, logs, from, clients[j].ip_and_port);
                                             } else {
                                                 // Nie parsuje się - błędny komunikat
-                                                // ROZŁĄCZ W TRAKCIE GRY
-                                                // disconnect_client(poll_fds, clients, &active_clients, j);
-                                                // std::cerr << "empty readn: ending connection (id: " << i << ")\n";
+                                                std::cerr << "Unexpected message from player " << map_int_to_place_name[j] << " disconnected\n";
+                                                disconnect_client_in_game(poll_fds, clients, &active_clients, j);
                                             }
                                         }
                                     } 
@@ -1474,21 +1466,18 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                             }
                             // POLLHUP <=> client disconnected by server - in case of some weird behaviour.
                             else if (poll_fds[j].fd != -1 && (poll_fds[j].revents & POLLHUP)) {
-                                // ROZŁĄCZ W TRAKCIE GRY
-                                // disconnect_client(poll_fds, clients, &active_clients, &ready, i);
-                                // std::cerr << "client " << i << " disconnected - waiting to reconnect\n";
+                                std::cerr << "POLLHUP in descriptor of player " << map_int_to_place_name[j] << " disconnected\n";
+                                disconnect_client_in_game(poll_fds, clients, &active_clients, j);
                             }
                             // POLLERR <=> client's error.
                             else if (poll_fds[j].fd != -1 && (poll_fds[j].revents & POLLERR)) {
-                                // ROZŁĄCZ W TRAKCIE GRY
-                                // disconnect_client(poll_fds, clients, &active_clients, &ready, i);
-                                // std::cerr << "client " << i << " got an error - disconnected\n";
+                                std::cerr << "POLLERR in descriptor of player " << map_int_to_place_name[j] << " disconnected\n";
+                                disconnect_client_in_game(poll_fds, clients, &active_clients, j);
                             }
                             // POLLNVAL <=> wrong descriptor.
                             else if (poll_fds[j].fd != -1 && (poll_fds[j].revents & POLLNVAL)) {
-                                // ROZŁĄCZ W TRAKCIE GRY
-                                // disconnect_client(poll_fds, clients, &active_clients, &ready, i);
-                                // std::cerr << "error in poll_fds array: descriptor " << i << "is wrong\n";
+                                std::cerr << "POLLNVAL in descriptor of player " << map_int_to_place_name[j] << " disconnected\n";
+                                disconnect_client_in_game(poll_fds, clients, &active_clients, j);
                             }
                         }
 
@@ -1521,7 +1510,7 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                                     std::cout << "received " << received_bytes << " bytes within connection (id: " << j << ")\n";
                                     std::cout << "parsing message: " << buffer << "\n";
                                     char place;
-                                    if (parse_iam(buffer, &place) == GOOD) {
+                                    if (parse_iam(buffer, &place, logs, clients[j].ip_and_port, from) == GOOD) {
                                         std::cout << "received IAM" << place << "\n";
                                         bool is_place_occupied[5];
                                         is_place_occupied[0] = false;
@@ -1546,17 +1535,19 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                                             if (written_bytes <= 0) {
                                                 throw std::runtime_error("writen (deal for new player)");
                                             }
+                                            logs.add(from, clients[p].ip_and_port, Clock::now(), deal_msg);
                                             // wszystkie komunikaty TAKEN:
                                             for (std::string msg : takens_sent) {
                                                 written_bytes = writen(poll_fds[p].fd, msg.c_str(), msg.length());
                                                 if (written_bytes <= 0) {
                                                     throw std::runtime_error("writen (taken for new player)");
                                                 }
+                                                logs.add(from, clients[p].ip_and_port, Clock::now(), msg);
                                             }
 
                                         } else {
                                             std::cerr << "new client tried to occupy a busy place\n";
-                                            send_busy(poll_fds[j].fd, is_place_occupied);
+                                            send_busy(poll_fds[j].fd, is_place_occupied, logs, from, clients[j].ip_and_port);
                                             disconnect_client(poll_fds, clients, &dummy1, &dummy2, j);
                                             std::cerr << "place busy: ending connection (id: " << j << ")\n";
                                         }
@@ -1571,21 +1562,21 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                             }
                             // POLLHUP <=> client disconnected by server - in case of some weird behaviour.
                             else if (poll_fds[j].fd != -1 && (poll_fds[j].revents & POLLHUP)) {
-                                // ROZŁĄCZ W TRAKCIE GRY
-                                // disconnect_client(poll_fds, clients, &active_clients, &ready, i);
-                                // std::cerr << "client " << i << " disconnected - waiting to reconnect\n";
+                                int dummy1, dummy2;
+                                disconnect_client(poll_fds, clients, &dummy1, &dummy2, j);
+                                std::cerr << "POLLHUP in client " << j << "while waiting for IAM - disconnected\n";
                             }
                             // POLLERR <=> client's error.
                             else if (poll_fds[j].fd != -1 && (poll_fds[j].revents & POLLERR)) {
-                                // ROZŁĄCZ W TRAKCIE GRY
-                                // disconnect_client(poll_fds, clients, &active_clients, &ready, i);
-                                // std::cerr << "client " << i << " got an error - disconnected\n";
+                                int dummy1, dummy2;
+                                disconnect_client(poll_fds, clients, &dummy1, &dummy2, j);
+                                std::cerr << "POLLERR in client " << j << "while waiting for IAM - disconnected\n";
                             }
                             // POLLNVAL <=> wrong descriptor.
                             else if (poll_fds[j].fd != -1 && (poll_fds[j].revents & POLLNVAL)) {
-                                // ROZŁĄCZ W TRAKCIE GRY
-                                // disconnect_client(poll_fds, clients, &active_clients, &ready, i);
-                                // std::cerr << "error in poll_fds array: descriptor " << i << "is wrong\n";
+                                int dummy1, dummy2;
+                                disconnect_client(poll_fds, clients, &dummy1, &dummy2, j);
+                                std::cerr << "POLLNVAL in client " << j << "while waiting for IAM - disconnected\n";
                             }
                         }
                     } 
@@ -1639,7 +1630,7 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                 
             }
 
-            broadcast_taken(clients, l, cards_on_table, winner, takens_sent);
+            broadcast_taken(clients, l, cards_on_table, winner, takens_sent, logs, from);
 
             // Przyznaj punkty:
             if (type == 1 || type == 7) {
@@ -1680,8 +1671,8 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
         print_clients(clients);
 
         // Po rozdaniu wysyłamy SCORE i TOTAL:
-        broadcast_score(clients);
-        broadcast_total(clients);
+        broadcast_score(clients, logs, from);
+        broadcast_total(clients, logs, from);
         
 
         // Czyścimy punktację z minionego rozdania, zachowujemy generalną:
@@ -1719,6 +1710,9 @@ int main(int argc, char** argv) {
 
     Game game;
 
+    // Logs:
+    Logs logs;
+    
     try {
         parse_arguments(argc, argv, &port_s, &filename, &timeout);
         print_options_info(port_s, filename, timeout); // test
@@ -1726,16 +1720,18 @@ int main(int argc, char** argv) {
         initialize_main_socket(&socket_fd, port_s, &port, &server_address, &ip_and_port);
         initialize_descriptors(poll_fds, socket_fd);
         initialize_clients_info(clients);
-        connect_with_players(poll_fds, clients, timeout, socket_fd);
-        game_manager(game, poll_fds, clients, timeout);
+        connect_with_players(poll_fds, clients, timeout, socket_fd, logs, ip_and_port);
+        game_manager(game, poll_fds, clients, timeout, logs, ip_and_port);
+        logs.write_to_stdout();
         
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << "\n";
         // close_server();
         return ERROR;
     }
-    
+
     /*
+    
     TEST PARSERA PLIKU:
     try {
         parse_arguments(argc, argv, &port_s, &filename, &timeout);
@@ -1760,14 +1756,29 @@ int main(int argc, char** argv) {
     }
     
 
-    // TESTY PARSERÓW:
+    // TESTY PARSERÓW/LOGÓW/CZEGOKOLWIEKCOJESTPOTRZEBNE:
     try {
-         test_parse_trick();
+        parse_arguments(argc, argv, &port_s, &filename, &timeout);
+        print_options_info(port_s, filename, timeout); // test
+        game = parse_game_file(filename);
+        initialize_main_socket(&socket_fd, port_s, &port, &server_address, &ip_and_port);
+        initialize_descriptors(poll_fds, socket_fd);
+        initialize_clients_info(clients);
+        connect_with_players(poll_fds, clients, timeout, socket_fd);
+        logs.add(ip_and_port, clients[1].ip_and_port, Clock::now(), "IAMN\r\n");
+        logs.add(clients[1].ip_and_port, ip_and_port, Clock::now(), "aceptN\r\n");
+        logs.add(ip_and_port, clients[2].ip_and_port, Clock::now(), "IAME\r\n");
+        logs.add(clients[2].ip_and_port, ip_and_port, Clock::now(), "aceptE\r\n");
+        logs.add(ip_and_port, clients[3].ip_and_port, Clock::now(), "IAMS\r\n");
+        logs.add(clients[3].ip_and_port, ip_and_port, Clock::now(), "aceptS\r\n");
+        logs.add(ip_and_port, clients[4].ip_and_port, Clock::now(), "IAMW\r\n");
+        logs.add(clients[4].ip_and_port, ip_and_port, Clock::now(), "aceptW\r\n");
+        logs.write_to_stdout();
     } catch (const std::exception& ex) {
         std::cerr << "Error: " << ex.what() << std::endl;
     }
-
-    */
+*/
+    
     // close_server(); TODO!!
     return GOOD;
 }
