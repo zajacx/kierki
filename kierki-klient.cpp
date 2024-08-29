@@ -827,7 +827,7 @@ void send_iam(int socket_fd, char place, Logs& logs, std::string from, std::stri
 
 // Sends TRICK<trick number><card> message to the server.
 void send_trick(int socket_fd, struct pollfd* poll_fds, Hand& hand, int trick_number, char required_suit,
-                Logs& logs, std::string from, std::string to) {
+                Logs& logs, std::string from, std::string to, bool verbose) {
 
     std::string message = "TRICK";
 
@@ -868,6 +868,250 @@ void send_trick(int socket_fd, struct pollfd* poll_fds, Hand& hand, int trick_nu
 
 }
 
+/*
+            // Message from user:
+            if (poll_fds[1].revents & POLLIN) {
+                std::string buffer = ""; 
+                int received_bytes = user_read_to_newline(poll_fds[1].fd, &buffer);
+                if (received_bytes <= 0) {
+                    std::cerr << "error in user_read\n";
+                } else {
+                    // coś przyszło:
+                    if (buffer == "cards\n") {
+                        // wyświetlenie listy kart na ręce:
+                        for (int i = 0; i < hand.cards.size(); i++) {
+                            std::cout << hand.cards[i].value << hand.cards[i].suit;
+                            if (i != hand.cards.size() - 1) {
+                                std::cout << ", ";
+                            }
+                        }
+                        std::cout << "\n";
+                    }
+                    else if (buffer == "tricks\n") {
+                        // wyświetlenie listy lew wziętych w ostatnim rozdaniu:
+                        for (int i = 0; i < tricks_taken.size(); i++) {
+                            std::cout << tricks_taken[i].value << tricks_taken[i].suit;
+                            if ((i + 1) % 4 == 0) {
+                                std::cout << "\n";
+                            } else if (i != tricks_taken.size() - 1) {
+                                std::cout << ", ";
+                            }
+                        }
+                    }
+                    else {
+                        std::cout << "Available commands: cards, tricks.\n";
+                    }
+                }
+            }
+
+}
+
+
+W trakcie wysyłania odpowiedzi na trick może przyjść kolejna prośba o położenie karty lub spam od użytkownika,
+w szczególności tricks i cards. Poll() słucha na deskryptorze serwera i standardowego wejścia
+
+W przypadku komunikatu TRICK użytkownik wybiera kartę do dołożenia, wpisując wykrzyknik i jej kod,
+np. "!10C", i naciskając enter. Ponadto użytkownik ma do dyspozycji takie polecenia, kończące się enterem:
+
+    cards  – wyświetlenie listy kart na ręce;
+    tricks – wyświetlenie listy lew wziętych w ostatniej rozgrywce w kolejności wzięcia – każda lewa to
+             lista kart w osobnej linii.
+
+Wszystkie listy w komunikatach dla użytkownika są wypisywane rozdzielone przecinkami i spacjami.
+
+*/
+
+void send_trick_user(struct pollfd* poll_fds, int* round_type, char* starting_player, Hand& hand,
+                     Logs& logs, std::string server_ip_and_port, std::string my_ip_and_port, bool trick_one, std::vector<Card>& tricks_taken,
+                     int trick_number) {
+
+    bool sent = false;
+
+    do {
+        poll_fds[0].revents = 0; // server
+        poll_fds[1].revents = 0; // stdin
+
+        // Client can wait indefinitely:
+        int poll_status = poll(poll_fds, 2, -1); 
+        check_poll_error(poll_status);
+
+        if (poll_status > 0) {
+            // Message from server:
+            if (poll_fds[0].revents & POLLIN) {
+
+                ssize_t last_read_size;
+                std::string buffer = "";
+                                                
+                int received_bytes = read_to_newline(poll_fds[0].fd, &buffer);
+
+                if (received_bytes < 0) {
+                    throw std::runtime_error("couldn't receive the message, disconnecting\n");
+                } else if (received_bytes == 0) {
+                    throw std::runtime_error("finished");
+                } else {
+                    // w momencie oczekiwania na położenie karty serwer może wysyłać w pętli TRICK
+                    logs.add(server_ip_and_port, my_ip_and_port, Clock::now(), buffer);
+                    int parsed_trick_number;
+                    std::vector<Card> on_table;
+                    if (parse_trick(buffer, &parsed_trick_number, on_table, trick_one) == GOOD) {
+                        // jesteśmy w kliencie-pośredniku więc wypisujemy komunikat od razu:
+                        verbose_trick(parsed_trick_number, on_table, hand.cards);
+                    }
+                    else {
+                        // nie wiadomo co przyszło, czekamy dalej;
+                        std::cerr << "parsing trick failed, waiting for another message\n";
+                    }
+                }
+            }
+            // Message from user:
+            if (poll_fds[1].revents & POLLIN) {
+                std::string buffer = ""; 
+                int received_bytes = user_read_to_newline(poll_fds[1].fd, &buffer);
+                if (received_bytes <= 0) {
+                    std::cerr << "error in user_read\n";
+                } else {
+                    // coś przyszło:
+                    if (buffer == "cards\n") {
+                        // wyświetlenie listy kart na ręce:
+                        for (int i = 0; i < hand.cards.size(); i++) {
+                            std::cout << hand.cards[i].value << hand.cards[i].suit;
+                            if (i != hand.cards.size() - 1) {
+                                std::cout << ", ";
+                            }
+                        }
+                        std::cout << "\n";
+                    }
+                    else if (buffer == "tricks\n") {
+                        // wyświetlenie listy lew wziętych w ostatnim rozdaniu:
+                        for (int i = 0; i < tricks_taken.size(); i++) {
+                            std::cout << tricks_taken[i].value << tricks_taken[i].suit;
+                            if ((i + 1) % 4 == 0) {
+                                std::cout << "\n";
+                            } else if (i != tricks_taken.size() - 1) {
+                                std::cout << ", ";
+                            }
+                        }
+                    }
+                    else if (buffer[0] == '!' && buffer.length() > 2 && buffer[buffer.length() - 1] == '\n') {
+                        // próbujemy parsować kartę
+                        std::string card_str = buffer.substr(1, buffer.length() - 2);
+                        size_t pos = 0;
+                        bool fmt_ok;
+                        Card card_to_put = parse_card(card_str, pos, &fmt_ok);
+                        if (fmt_ok) {
+                            // jeśli format ok, to połóż kartę, czyli wyślij tricka
+                            std::string message = "TRICK";
+                            message += std::to_string(trick_number);
+                            message += card_to_put.value;
+                            message += std::string(1, card_to_put.suit);
+                            message += "\r\n";
+
+                            std::cout << "sent TRICK" << trick_number << card_to_put.value << card_to_put.suit << "\n";
+
+                            ssize_t written_bytes = writen(poll_fds[0].fd, message.c_str(), message.length());
+                            if (written_bytes <= 0) {
+                                throw std::runtime_error("writen (trick)");
+                            }
+
+                            logs.add(my_ip_and_port, server_ip_and_port, Clock::now(), message);
+
+                        } else {
+                            std::cout << "Wrong card format. Use 'trick' to display your cards.\n";
+                        }
+                    }
+                    else {
+                        std::cout << "Available commands: cards, tricks.\n";
+                    }
+                }
+            }
+        }
+        else {
+            std::cout << "timeout...\n";
+        }
+    } while (!sent);
+}
+
+
+// --------------------------------- User interface -------------------------------------
+
+// BUSY<lista zajętych miejsc przy stole>
+void verbose_busy(std::vector<char> busy_places) {
+    std::cout << "Place busy, list of busy places received: ";
+    for (int i = 0; i < busy_places.size(); i++) {
+        std::cout << busy_places[i];
+        if (i != busy_places.size() - 1) {
+            std::cout << ", ";
+        }
+    }
+    std::cout << ".\n";
+}
+
+// DEAL<typ rozdania><miejsce przy stole klienta wychodzącego jako pierwszy w rozdaniu><lista kart>
+void verbose_deal(int round_type, char starting_player, std::vector<Card>& card_list) {
+    std::cout << "New deal " << round_type << ": staring place " << starting_player << ", your cards: ";
+    for (int i = 0; i < card_list.size(); i++) {
+        std::cout << card_list[i].value << card_list[i].suit;
+        if (i != card_list.size() - 1) {
+            std::cout << ", ";
+        }
+    }
+    std::cout << ".\n";
+}
+
+// WRONG<numer lewy>
+void verbose_wrong(int trick_number) {
+    std::cout << "Wrong message received in trick " << trick_number << ".\n";
+}
+
+// TAKEN<numer lewy><lista kart><miejsce przy stole klienta biorącego lewę>
+void verbose_taken(int trick_number, char winner, std::vector<Card>& card_list) {
+    std::cout << "A trick " << trick_number << " is taken by " << winner << ", cards ";
+    for (int i = 0; i < card_list.size(); i++) {
+        std::cout << card_list[i].value << card_list[i].suit;
+        if (i != card_list.size() - 1) {
+            std::cout << ", ";
+        }
+    }
+    std::cout << ".\n";
+}
+
+// SCORE<miejsce przy stole klienta><liczba punktów>[...]
+void verbose_score(int* scores) {
+    std::cout << "The scores are:\n";
+    std::cout << "N | " << scores[1] << "\n";
+    std::cout << "E | " << scores[2] << "\n";
+    std::cout << "S | " << scores[3] << "\n";
+    std::cout << "W | " << scores[4] << "\n";
+}
+
+// TOTAL<miejsce przy stole klienta><liczba punktów>[...]
+void verbose_total(int* total_scores) {
+    std::cout << "The total scores are:\n";
+    std::cout << "N | " << total_scores[1] << "\n";
+    std::cout << "E | " << total_scores[2] << "\n";
+    std::cout << "S | " << total_scores[3] << "\n";
+    std::cout << "W | " << total_scores[4] << "\n";
+}
+
+// TRICK<numer lewy><lista kart>
+void verbose_trick(int trick_number, std::vector<Card>& cards_on_table, std::vector<Card>& cards_in_hand) {
+    std::cout << "Trick: (" << trick_number << ") ";
+    for (int i = 0; i < cards_on_table.size(); i++) {
+        std::cout << cards_on_table[i].value << cards_on_table[i].suit;
+        if (i != cards_on_table.size() - 1) {
+            std::cout << ", ";
+        }
+    }
+    std::cout << "\nAvailable: ";
+    for (int i = 0; i < cards_in_hand.size(); i++) {
+        std::cout << cards_in_hand[i].value << cards_in_hand[i].suit;
+        if (i != cards_in_hand.size() - 1) {
+            std::cout << ", ";
+        }
+    }
+    std::cout << "\n";
+}
+
 
 // ------------------------------- Receiving messages -----------------------------------
 
@@ -875,7 +1119,8 @@ void send_trick(int socket_fd, struct pollfd* poll_fds, Hand& hand, int trick_nu
 
 // Receives first message from the server to determine if server accepted a request.
 bool recv_busy_or_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, char* starting_player,
-                       Hand& hand, int* first_trick, char* first_suit, Logs& logs, std::string from, std::string to) {
+                       Hand& hand, int* first_trick, char* first_suit, Logs& logs, std::string from,
+                       std::string to, bool verbose, char my_position, std::vector<Card>& tricks_taken) {
 
     bool received = false;
 
@@ -910,6 +1155,9 @@ bool recv_busy_or_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, 
                     std::vector<char> busy_places;
                     if (parse_deal(buffer, round_type, starting_player, hand) == GOOD) {
                         // Po odebraniu DEAL mamy 13 kart.
+                        
+                        if (verbose) verbose_deal(*round_type, *starting_player, hand.cards);
+                        
                         std::cout << "Got DEAL, joining game\n";
                         bool got_trick = false;
                         bool trick_one = true;
@@ -924,6 +1172,13 @@ bool recv_busy_or_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, 
                             std::vector<Card> cards_on_table;
                             char taken_by;
                             if (parse_taken(buffer, &parsed_trick_number, cards_in_taken, &taken_by, trick_one) == GOOD) {
+                                if (verbose) verbose_taken(parsed_trick_number, taken_by, cards_in_taken);
+                                // zapamiętaj wziętą lewę
+                                if (taken_by == my_position) {
+                                    for (Card card : cards_in_taken) {
+                                        tricks_taken.push_back(card);
+                                    }
+                                }
                                 trick_one = false;
                                 hand.remove_cards_in_taken(cards_in_taken);
                                 (*first_trick)++; // after each taken we are at different trick
@@ -931,7 +1186,11 @@ bool recv_busy_or_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, 
                             }
                             // TRICK:
                             else if (parse_trick(buffer, &parsed_trick_number, cards_on_table, trick_one) == GOOD) {
+                                
+                                if (verbose) verbose_trick(parsed_trick_number, cards_on_table, hand.cards);
+
                                 std::cout << "received trick\n";
+                                
                                 if (cards_on_table.size() != 0) {
                                     *first_suit = cards_on_table[0].suit;
                                 }
@@ -961,11 +1220,14 @@ bool recv_busy_or_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, 
                     }
                     else if (parse_busy(buffer, busy_places) == GOOD) {
                         std::cerr << "received busy, disconnecting; busy places: ";
-                        logs.add(from, to, Clock::now(), buffer);
                         for (char place : busy_places) {
                             std::cerr << place << " ";
                         }
                         std::cerr << "\n";
+
+                        logs.add(from, to, Clock::now(), buffer);
+                        if (verbose) verbose_busy(busy_places);
+                        
                         break;
                     }
                     else {
@@ -975,11 +1237,39 @@ bool recv_busy_or_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, 
                     }
                 }
             }
-            // Data from user:
+            // Message from user:
             if (poll_fds[1].revents & POLLIN) {
                 std::string buffer = ""; 
                 int received_bytes = user_read_to_newline(poll_fds[1].fd, &buffer);
-                std::cerr << "wait for the game to start!\n";
+                if (received_bytes <= 0) {
+                    std::cerr << "error in user_read\n";
+                } else {
+                    // coś przyszło:
+                    if (buffer == "cards\n") {
+                        // wyświetlenie listy kart na ręce:
+                        for (int i = 0; i < hand.cards.size(); i++) {
+                            std::cout << hand.cards[i].value << hand.cards[i].suit;
+                            if (i != hand.cards.size() - 1) {
+                                std::cout << ", ";
+                            }
+                        }
+                        std::cout << "\n";
+                    }
+                    else if (buffer == "tricks\n") {
+                        // wyświetlenie listy lew wziętych w ostatnim rozdaniu:
+                        for (int i = 0; i < tricks_taken.size(); i++) {
+                            std::cout << tricks_taken[i].value << tricks_taken[i].suit;
+                            if ((i + 1) % 4 == 0) {
+                                std::cout << "\n";
+                            } else if (i != tricks_taken.size() - 1) {
+                                std::cout << ", ";
+                            }
+                        }
+                    }
+                    else {
+                        std::cout << "Available commands: cards, tricks.\n";
+                    }
+                }
             }
         }
         else {
@@ -992,7 +1282,7 @@ bool recv_busy_or_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, 
 
 
 void recv_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, char* starting_player, Hand& hand,
-               Logs& logs, std::string from, std::string to) {
+               Logs& logs, std::string from, std::string to, bool verbose, std::vector<Card>& tricks_taken) {
 
     bool received = false;
 
@@ -1021,6 +1311,7 @@ void recv_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, char* st
                     // coś odebrano - próbujemy parsować DEAL
                     logs.add(from, to, Clock::now(), buffer);
                     if (parse_deal(buffer, round_type, starting_player, hand) == GOOD) {
+                        if (verbose) verbose_deal(*round_type, *starting_player, hand.cards);
                         std::cout << "received deal\n";
                         received = true;
                         break;
@@ -1035,7 +1326,35 @@ void recv_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, char* st
             if (poll_fds[1].revents & POLLIN) {
                 std::string buffer = ""; 
                 int received_bytes = user_read_to_newline(poll_fds[1].fd, &buffer);
-                std::cerr << "waiting for deal\n";
+                if (received_bytes <= 0) {
+                    std::cerr << "error in user_read\n";
+                } else {
+                    // coś przyszło:
+                    if (buffer == "cards\n") {
+                        // wyświetlenie listy kart na ręce:
+                        for (int i = 0; i < hand.cards.size(); i++) {
+                            std::cout << hand.cards[i].value << hand.cards[i].suit;
+                            if (i != hand.cards.size() - 1) {
+                                std::cout << ", ";
+                            }
+                        }
+                        std::cout << "\n";
+                    }
+                    else if (buffer == "tricks\n") {
+                        // wyświetlenie listy lew wziętych w ostatnim rozdaniu:
+                        for (int i = 0; i < tricks_taken.size(); i++) {
+                            std::cout << tricks_taken[i].value << tricks_taken[i].suit;
+                            if ((i + 1) % 4 == 0) {
+                                std::cout << "\n";
+                            } else if (i != tricks_taken.size() - 1) {
+                                std::cout << ", ";
+                            }
+                        }
+                    }
+                    else {
+                        std::cout << "Available commands: cards, tricks.\n";
+                    }
+                }
             }
         }
         else {
@@ -1046,7 +1365,8 @@ void recv_deal(int socket_fd, struct pollfd* poll_fds, int* round_type, char* st
 
 
 void recv_trick_or_score(int socket_fd, struct pollfd* poll_fds, char* suit, bool trick_one,  bool* early_finish,
-                         int* scores, int* total_scores, Logs& logs, std::string from, std::string to) {
+                         int* scores, int* total_scores, Hand& hand, Logs& logs, std::string from, std::string to,
+                         bool verbose, std::vector<Card>& tricks_taken) {
 
     bool received = false;
 
@@ -1078,6 +1398,7 @@ void recv_trick_or_score(int socket_fd, struct pollfd* poll_fds, char* suit, boo
 
                     // TRICK:
                     if (parse_trick(buffer, &trick_number, on_table, trick_one) == GOOD) {
+                        if (verbose) verbose_trick(trick_number, on_table, hand.cards);
                         std::cout << "received trick\n";
                         if (on_table.size() != 0) {
                             *suit = on_table[0].suit;
@@ -1087,10 +1408,12 @@ void recv_trick_or_score(int socket_fd, struct pollfd* poll_fds, char* suit, boo
                     }
                     // SCORE + TOTAL:
                     else if (parse_score(buffer, scores) == GOOD) {
+                        if (verbose) verbose_score(scores);
                         std::cout << "received score - early round ending\n";
                         received_bytes = read_to_newline(poll_fds[0].fd, &buffer);
                         logs.add(from, to, Clock::now(), buffer);
                         if (parse_total(buffer, total_scores) == GOOD) {
+                            if (verbose) verbose_total(total_scores);
                             std::cout << "received total - early round ending\n";
                             received = true;
                             *early_finish = true;
@@ -1101,10 +1424,12 @@ void recv_trick_or_score(int socket_fd, struct pollfd* poll_fds, char* suit, boo
                     }
                     // TOTAL + SCORE:
                     else if (parse_total(buffer, total_scores) == GOOD) {
+                        if (verbose) verbose_total(total_scores);
                         std::cout << "received total\n";
                         received_bytes = read_to_newline(poll_fds[0].fd, &buffer);
                         logs.add(from, to, Clock::now(), buffer);
                         if (parse_score(buffer, scores) == GOOD) {
+                            if (verbose) verbose_score(scores);
                             std::cout << "received score\n";
                             received = true;
                             *early_finish = true;
@@ -1123,7 +1448,35 @@ void recv_trick_or_score(int socket_fd, struct pollfd* poll_fds, char* suit, boo
             if (poll_fds[1].revents & POLLIN) {
                 std::string buffer = ""; 
                 int received_bytes = user_read_to_newline(poll_fds[1].fd, &buffer);
-                std::cerr << "waiting for trick\n";
+                if (received_bytes <= 0) {
+                    std::cerr << "error in user_read\n";
+                } else {
+                    // coś przyszło:
+                    if (buffer == "cards\n") {
+                        // wyświetlenie listy kart na ręce:
+                        for (int i = 0; i < hand.cards.size(); i++) {
+                            std::cout << hand.cards[i].value << hand.cards[i].suit;
+                            if (i != hand.cards.size() - 1) {
+                                std::cout << ", ";
+                            }
+                        }
+                        std::cout << "\n";
+                    }
+                    else if (buffer == "tricks\n") {
+                        // wyświetlenie listy lew wziętych w ostatnim rozdaniu:
+                        for (int i = 0; i < tricks_taken.size(); i++) {
+                            std::cout << tricks_taken[i].value << tricks_taken[i].suit;
+                            if ((i + 1) % 4 == 0) {
+                                std::cout << "\n";
+                            } else if (i != tricks_taken.size() - 1) {
+                                std::cout << ", ";
+                            }
+                        }
+                    }
+                    else {
+                        std::cout << "Available commands: cards, tricks.\n";
+                    }
+                }
             }
         }
         else {
@@ -1134,7 +1487,8 @@ void recv_trick_or_score(int socket_fd, struct pollfd* poll_fds, char* suit, boo
 
 
 void recv_trick_response(int socket_fd, struct pollfd* poll_fds, bool* accepted, Hand& hand, bool trick_one,
-                         Logs& logs, std::string from, std::string to) {
+                         Logs& logs, std::string from, std::string to, bool verbose, char my_position,
+                         std::vector<Card>& tricks_taken) {
 
     bool received = false;
 
@@ -1163,11 +1517,18 @@ void recv_trick_response(int socket_fd, struct pollfd* poll_fds, bool* accepted,
                     // coś odebrano - próbujemy parsować TAKEN lub WRONG
                     logs.add(from, to, Clock::now(), buffer);
                     int trick_number;
-                    std::vector<Card> cards_taken;  // TODO: określić czy wypychać te parametry na zewnątrz
+                    std::vector<Card> cards_taken;
                     char taken_by;
                     // TAKEN:
                     if (parse_taken(buffer, &trick_number, cards_taken, &taken_by, trick_one) == GOOD) {
+                        if (verbose) verbose_taken(trick_number, taken_by, cards_taken);
                         std::cout << "trick " << trick_number << " taken by " << taken_by << "\n";
+                        // zapamiętaj wziętą lewę
+                        if (taken_by == my_position) {
+                            for (Card card : cards_taken) {
+                                tricks_taken.push_back(card);
+                            }
+                        }
                         received = true;
                         *accepted = true;
                         hand.remove_cards_in_taken(cards_taken);
@@ -1175,6 +1536,7 @@ void recv_trick_response(int socket_fd, struct pollfd* poll_fds, bool* accepted,
                     }
                     // WRONG:
                     else if (parse_wrong(buffer, &trick_number) == GOOD) {
+                        if (verbose) verbose_wrong(trick_number);
                         std::cerr << "received wrong (trick: " << trick_number << "), sending card again\n";
                         received = true;
                         break;
@@ -1190,7 +1552,35 @@ void recv_trick_response(int socket_fd, struct pollfd* poll_fds, bool* accepted,
             if (poll_fds[1].revents & POLLIN) {
                 std::string buffer = ""; 
                 int received_bytes = user_read_to_newline(poll_fds[1].fd, &buffer);
-                std::cerr << "waiting for taken or wrong\n";
+                if (received_bytes <= 0) {
+                    std::cerr << "error in user_read\n";
+                } else {
+                    // coś przyszło:
+                    if (buffer == "cards\n") {
+                        // wyświetlenie listy kart na ręce:
+                        for (int i = 0; i < hand.cards.size(); i++) {
+                            std::cout << hand.cards[i].value << hand.cards[i].suit;
+                            if (i != hand.cards.size() - 1) {
+                                std::cout << ", ";
+                            }
+                        }
+                        std::cout << "\n";
+                    }
+                    else if (buffer == "tricks\n") {
+                        // wyświetlenie listy lew wziętych w ostatnim rozdaniu:
+                        for (int i = 0; i < tricks_taken.size(); i++) {
+                            std::cout << tricks_taken[i].value << tricks_taken[i].suit;
+                            if ((i + 1) % 4 == 0) {
+                                std::cout << "\n";
+                            } else if (i != tricks_taken.size() - 1) {
+                                std::cout << ", ";
+                            }
+                        }
+                    }
+                    else {
+                        std::cout << "Available commands: cards, tricks.\n";
+                    }
+                }
             }
         }
         else {
@@ -1201,7 +1591,8 @@ void recv_trick_response(int socket_fd, struct pollfd* poll_fds, bool* accepted,
 
 // Receives SCORE and TOTAL from server.
 void recv_score_and_total(int socket_fd, struct pollfd* poll_fds, int* scores, int* total_scores,
-                          Logs& logs, std::string from, std::string to) {
+                          Logs& logs, std::string from, std::string to, bool verbose,
+                          std::vector<Card>& tricks_taken, Hand& hand) {
 
     bool received = false;
 
@@ -1230,10 +1621,12 @@ void recv_score_and_total(int socket_fd, struct pollfd* poll_fds, int* scores, i
                     logs.add(from, to, Clock::now(), buffer);
                     // SCORE + TOTAL:
                     if (parse_score(buffer, scores) == GOOD) {
+                        if (verbose) verbose_score(scores);
                         std::cout << "received score\n";
                         received_bytes = read_to_newline(poll_fds[0].fd, &buffer);
                         logs.add(from, to, Clock::now(), buffer);
                         if (parse_total(buffer, total_scores) == GOOD) {
+                            if (verbose) verbose_total(total_scores);
                             std::cout << "received total\n";
                             received = true;
                             break;
@@ -1243,10 +1636,12 @@ void recv_score_and_total(int socket_fd, struct pollfd* poll_fds, int* scores, i
                     }
                     // TOTAL + SCORE:
                     else if (parse_total(buffer, total_scores) == GOOD) {
+                        if (verbose) verbose_total(total_scores);
                         std::cout << "received total\n";
                         received_bytes = read_to_newline(poll_fds[0].fd, &buffer);
                         logs.add(from, to, Clock::now(), buffer);
                         if (parse_score(buffer, scores) == GOOD) {
+                            if (verbose) verbose_score(scores);
                             std::cout << "received score\n";
                             received = true;
                             break;
@@ -1264,66 +1659,35 @@ void recv_score_and_total(int socket_fd, struct pollfd* poll_fds, int* scores, i
             if (poll_fds[1].revents & POLLIN) {
                 std::string buffer = ""; 
                 int received_bytes = user_read_to_newline(poll_fds[1].fd, &buffer);
-                std::cerr << "waiting for score\n";
-            }
-        }
-        else {
-            std::cout << "timeout...\n";
-        }
-    } while (!received);
-}
-
-
-// Receives TOTAL from server.
-void recv_total(int socket_fd, struct pollfd* poll_fds, int* total_scores,
-                Logs& logs, std::string from, std::string to) {
-
-    bool received = false;
-
-    do {
-        poll_fds[0].revents = 0;
-        poll_fds[1].revents = 0;
-
-        // Client can wait indefinitely:
-        int poll_status = poll(poll_fds, 2, -1); 
-        check_poll_error(poll_status);
-
-        if (poll_status > 0) {
-            // Message from server:
-            if (poll_fds[0].revents & POLLIN) {
-
-                ssize_t last_read_size;
-                std::string buffer = "";
-                                                
-                int received_bytes = read_to_newline(poll_fds[0].fd, &buffer);
-
-                if (received_bytes < 0) {
-                    throw std::runtime_error("couldn't receive the message, disconnecting\n");
-                } else if (received_bytes == 0) {
-                    throw std::runtime_error("server closed the connection\n");
+                if (received_bytes <= 0) {
+                    std::cerr << "error in user_read\n";
                 } else {
-                    logs.add(from, to, Clock::now(), buffer);
-                    // coś odebrano - próbujemy parsować TOTAL
-                    int total[5];
-                    if (parse_total(buffer, total) == GOOD) {
-                        std::cout << "received score\n";
-                        for (int i = 1; i <= 4; i++) {
-                            std::cout << "score " << i << ": " << total[i] << "\n";
+                    // coś przyszło:
+                    if (buffer == "cards\n") {
+                        // wyświetlenie listy kart na ręce:
+                        for (int i = 0; i < hand.cards.size(); i++) {
+                            std::cout << hand.cards[i].value << hand.cards[i].suit;
+                            if (i != hand.cards.size() - 1) {
+                                std::cout << ", ";
+                            }
                         }
-                        received = true;
-                        break;
+                        std::cout << "\n";
+                    }
+                    else if (buffer == "tricks\n") {
+                        // wyświetlenie listy lew wziętych w ostatnim rozdaniu:
+                        for (int i = 0; i < tricks_taken.size(); i++) {
+                            std::cout << tricks_taken[i].value << tricks_taken[i].suit;
+                            if ((i + 1) % 4 == 0) {
+                                std::cout << "\n";
+                            } else if (i != tricks_taken.size() - 1) {
+                                std::cout << ", ";
+                            }
+                        }
                     }
                     else {
-                        // nie wiadomo co przyszło, czekamy dalej;
-                        std::cerr << "parsing total failed, waiting for another message\n";
+                        std::cout << "Available commands: cards, tricks.\n";
                     }
                 }
-            }
-            // Message from user:
-            if (poll_fds[1].revents & POLLIN) {
-                std::string buffer = ""; 
-                int received_bytes = user_read_to_newline(poll_fds[1].fd, &buffer);
-                std::cerr << "waiting for total\n";
             }
         }
         else {
@@ -1337,7 +1701,8 @@ void recv_total(int socket_fd, struct pollfd* poll_fds, int* total_scores,
 
 // Manages player in game.
 void play_game(int socket_fd, struct pollfd* poll_fds, int s_round_type, char s_starting_player, Hand& hand,
-               int first_trick, char first_suit, Logs& logs, std::string my_ip_and_port, std::string server_ip_and_port) {
+               int first_trick, char first_suit, Logs& logs, std::string my_ip_and_port, std::string server_ip_and_port,
+               bool verbose, char my_position, std::vector<Card> tricks_taken) {
 
     int round_type = s_round_type;
     char starting_player = s_starting_player;
@@ -1347,14 +1712,11 @@ void play_game(int socket_fd, struct pollfd* poll_fds, int s_round_type, char s_
 
     while (true) {
         // początek rozdania, odbierz DEAL:
-        
-        // tutaj może się przydać first_trick jeśli wchodzimy w środek gry
-        // int first_trick = 1;
 
         if (round_number != 0) {
             hand.cards.clear();
             try {
-                recv_deal(socket_fd, poll_fds, &round_type, &starting_player, hand, logs, server_ip_and_port, my_ip_and_port);
+                recv_deal(socket_fd, poll_fds, &round_type, &starting_player, hand, logs, server_ip_and_port, my_ip_and_port, verbose, tricks_taken);
             } catch (const std::exception& e) {
                 std::cout << "error format: " << e.what() << "\n";
                 if (strcmp(e.what(), "finished") == 0) {
@@ -1380,7 +1742,7 @@ void play_game(int socket_fd, struct pollfd* poll_fds, int s_round_type, char s_
                 suit = first_suit;
                 first = false;
             } else {
-                recv_trick_or_score(socket_fd, poll_fds, &suit, (l == 1), &early_finish, scores, total_scores, logs, server_ip_and_port, my_ip_and_port);
+                recv_trick_or_score(socket_fd, poll_fds, &suit, (l == 1), &early_finish, scores, total_scores, hand, logs, server_ip_and_port, my_ip_and_port, verbose, tricks_taken);
             }
             
             if (!early_finish) {
@@ -1388,8 +1750,8 @@ void play_game(int socket_fd, struct pollfd* poll_fds, int s_round_type, char s_
                 do {
                     // sleep(1); // test
                     // Try sending TRICK:
-                    send_trick(socket_fd, poll_fds, hand, l, suit, logs, my_ip_and_port, server_ip_and_port);
-                    recv_trick_response(socket_fd, poll_fds, &accepted, hand, (l == 1), logs, server_ip_and_port, my_ip_and_port); 
+                    send_trick(socket_fd, poll_fds, hand, l, suit, logs, my_ip_and_port, server_ip_and_port, verbose);
+                    recv_trick_response(socket_fd, poll_fds, &accepted, hand, (l == 1), logs, server_ip_and_port, my_ip_and_port, verbose, my_position, tricks_taken);
                 } while (!accepted);
             
             } else {
@@ -1397,10 +1759,11 @@ void play_game(int socket_fd, struct pollfd* poll_fds, int s_round_type, char s_
             }
         }
         if (!early_finish) {
-            recv_score_and_total(socket_fd, poll_fds, scores, total_scores, logs, server_ip_and_port, my_ip_and_port);
+            recv_score_and_total(socket_fd, poll_fds, scores, total_scores, logs, server_ip_and_port, my_ip_and_port, verbose, tricks_taken, hand);
         }
         round_number++;
         first_trick = 1; // After using first_trick set it to a default value.
+        tricks_taken.clear(); // After each round clear taken tricks list.
         // można też wypisać scores i total_scores, przyda się w kliencie manualnym
     }
 }
@@ -1413,7 +1776,6 @@ void initialize_descriptors(struct pollfd* poll_fds, int socket_fd) {
     poll_fds[1].events = POLLIN;
 }
 
-
 // --------------------------------------- Main -----------------------------------------
 
 int main(int argc, char** argv) {
@@ -1423,7 +1785,7 @@ int main(int argc, char** argv) {
     char place;
     bool ipv4 = false;
     bool ipv6 = false;
-    bool bot = false;
+    bool bot = false;       // verbose == !bot
 
     // Runtime data:
     uint16_t port;
@@ -1439,6 +1801,7 @@ int main(int argc, char** argv) {
     int round_type;
     char starting_player;
     Hand hand;
+    std::vector<Card> tricks_taken;
 
     // State:
     bool connected = false;
@@ -1460,7 +1823,7 @@ int main(int argc, char** argv) {
         // Determine if we are accepted to join the game:
         int first_trick = 1;
         char first_suit = 'X';
-        if (recv_busy_or_deal(socket_fd, poll_fds, &round_type, &starting_player, hand, &first_trick, &first_suit, logs, server_ip_and_port, my_ip_and_port)) {
+        if (recv_busy_or_deal(socket_fd, poll_fds, &round_type, &starting_player, hand, &first_trick, &first_suit, logs, server_ip_and_port, my_ip_and_port, !bot, place, tricks_taken)) {
             std::cout << "received deal, round parameters\n";
             std::cout << "round type: " << round_type << "\n";
             std::cout << "starting player: " << starting_player << "\n";
@@ -1469,7 +1832,7 @@ int main(int argc, char** argv) {
                 std::cout << card.value << card.suit << " ";
             }
             std::cout << "\n";
-            play_game(socket_fd, poll_fds, round_type, starting_player, hand, first_trick, first_suit, logs, my_ip_and_port, server_ip_and_port);
+            play_game(socket_fd, poll_fds, round_type, starting_player, hand, first_trick, first_suit, logs, my_ip_and_port, server_ip_and_port, !bot, place, tricks_taken);
         } else {
             std::cout << "received busy, disconnecting\n";
             disconnect_from_server(&connected, socket_fd);
