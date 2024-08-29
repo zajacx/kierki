@@ -18,6 +18,7 @@
 #include <arpa/inet.h>
 #include <assert.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <netdb.h>
@@ -68,8 +69,10 @@
 // Buffer to use in writen, each buffer for readn is local.
 // static char buffer[BUFFER_SIZE];
 
+/*
 using Clock = std::chrono::steady_clock;
 using TimePoint = std::chrono::time_point<Clock>;
+*/
 
 struct ClientInfo {
     int fd;
@@ -166,7 +169,7 @@ static RoundPoints round_points[ROUND_TYPES + 1] = {
 };
 
 static int points_in_total[ROUND_TYPES + 1] = {0, 13, 13, 20, 16, 18, 20, 100};
-
+/*
 struct Card {
     std::string value;
     char suit;
@@ -186,6 +189,7 @@ struct Card {
     }
 };
 
+/*
 struct Hand {
     std::vector<Card> cards;
 
@@ -200,11 +204,21 @@ struct Hand {
         }
     }
 
+    void remove_cards_in_taken(const std::vector<Card>& cards_in_taken) {
+        for (const auto& table_card : cards_in_taken) {
+            auto it = std::find(cards.begin(), cards.end(), table_card);
+            if (it != cards.end()) {
+                cards.erase(it);
+            }
+        }
+    }
+
     bool contains(const std::string& value, char suit) {
         auto it = std::find(cards.begin(), cards.end(), Card(value, suit));
         return it != cards.end();
     }
 };
+*/
 
 struct Round {
     int round_type;
@@ -223,6 +237,7 @@ struct Game {
     }
 };
 
+/*
 // COMMON
 struct Logs {
     std::vector<std::string> logs;
@@ -251,6 +266,7 @@ struct Logs {
         }
     }
 };
+*/
 
 // ------------------------------- Functions for structs --------------------------------
 
@@ -617,6 +633,11 @@ void accept_client(struct pollfd* poll_fds, struct ClientInfo* clients) {
     int client_fd = accept(poll_fds[0].fd, (struct sockaddr*)&client_address, &len);
     if (client_fd < 0) {
         throw std::runtime_error("accept");
+    }
+
+    // Set to non-blocking:
+    if (fcntl(client_fd, F_SETFL, O_NONBLOCK) < 0) {
+        throw std::runtime_error("fcntl error");
     }
 
     uint16_t client_port;
