@@ -1,9 +1,14 @@
 #ifndef KIERKI_KIERKI_COMMON_H
 #define KIERKI_KIERKI_COMMON_H
 
+#define GOOD 0
+#define ERROR 1
+#define TIMEOUT 500
+
 using Clock = std::chrono::steady_clock;
 using TimePoint = std::chrono::time_point<Clock>;
 
+#include <algorithm>
 #include <vector>
 #include <string>
 #include <chrono>
@@ -89,5 +94,9 @@ struct Hand {
         return it != cards.end();
     }
 };
+
+Card parse_card(const std::string& hand_str, size_t& pos, bool* fmt_ok);
+int parse_card_set(const std::string& hand_str, std::vector<Card>& card_vector);
+void check_poll_error(int poll_status);
 
 #endif //KIERKI_KIERKI_COMMON_H
