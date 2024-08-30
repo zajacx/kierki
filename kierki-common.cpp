@@ -39,7 +39,7 @@ Card parse_card(const std::string& hand_str, size_t& pos, bool* fmt_ok) {
         }
     } else {
         suit_ok = false;
-        std::cerr << "Invalid card string\n";
+        // std::cerr << "Invalid card string\n";
     }
 
     *fmt_ok = (value_ok && suit_ok);

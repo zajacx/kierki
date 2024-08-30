@@ -259,7 +259,6 @@ void create_socket(int* socket_fd) {
     if (*socket_fd < 0) {
         throw std::runtime_error("socket");
     }
-    // OPTIONAL THINGS:
     // Allow dual-stack socket to accept both IPv4 and IPv6:
     int opt = 0;
     if (setsockopt(*socket_fd, IPPROTO_IPV6, IPV6_V6ONLY, (void*)&opt, sizeof(opt)) < 0) {
@@ -267,20 +266,11 @@ void create_socket(int* socket_fd) {
         close(*socket_fd);
         throw std::runtime_error("setsockopt1");
     }
-    /*
-    // Allow the socket to be reused:
-    opt = 1;
-    if (setsockopt(*socket_fd, SOL_SOCKET, SO_REUSEADDR, (void*)&opt, sizeof(opt))) {
-        // Manually handle closing the socket:
-        close(*socket_fd);
-        throw std::runtime_error("setsockopt2");
-    }
-    */
 }
 
 // Binds socket to a particular address.
 void bind_socket_to_address(int socket_fd, uint16_t port, struct sockaddr_in6* server_address) {
-    (*server_address).sin6_family = AF_INET6; // check if it works with IPv4
+    (*server_address).sin6_family = AF_INET6;
     (*server_address).sin6_addr = in6addr_any;
     (*server_address).sin6_port = htons(port);
 
@@ -339,15 +329,11 @@ void switch_to_listening(int socket_fd) {
 void initialize_main_socket(int* socket_fd, std::string port_s, uint16_t* port,
                             struct sockaddr_in6* server_address, std::string* ip_and_port) {
     *port = (port_s == "0") ? 0 : read_port(port_s);
-    // std::cout << "Port: " << *port << "\n";
     create_socket(socket_fd);
     bind_socket_to_address(*socket_fd, *port, server_address);
     switch_to_listening(*socket_fd);
     
     get_server_ip(*socket_fd, port, ip_and_port);
-
-    // std::cout << "IP and port: " << *ip_and_port << "\n";
-    // std::cout << "listening on port: " << *port << "\n";
 }
 
 
@@ -429,8 +415,6 @@ void get_client_ip(int client_fd, uint16_t* port, std::string* ip_and_port) {
             close(client_fd);
             throw std::runtime_error("inner inet_ntop 1");
         }
-        // test:
-        //std::cout << "Client connected from IPv4: " << address << "\n";
     }
     else if (client_address.ss_family == AF_INET6) {
         struct sockaddr_in6 *s = (struct sockaddr_in6 *)&client_address;
@@ -438,8 +422,6 @@ void get_client_ip(int client_fd, uint16_t* port, std::string* ip_and_port) {
             close(client_fd);
             throw std::runtime_error("inner inet_ntop 2");
         }
-        // test:
-        //std::cout << "Client connected from IPv6: " << address << "\n"; // test
     }
     else {
         close(client_fd);
@@ -479,7 +461,6 @@ void accept_client(struct pollfd* poll_fds, struct ClientInfo* clients) {
             poll_fds[id].fd = client_fd;
             poll_fds[id].events = POLLIN;
             poll_fds[id].revents = 0;
-            // std::cout << "received new connection (id: " << id << "): " << client_ip_and_port << "\n";
             break;
         }
         id++;
@@ -515,7 +496,6 @@ void calculate_remaining_time(struct pollfd* poll_fds, struct ClientInfo* client
             // Client hasn't sent IAM, so calculate time left:
             auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(now - clients[i].connection_time).count();
             int time_left = timeout - elapsed_time;
-            // std::cout << "time left for client " << i << ": " << time_left << "\n";
 
             if (time_left <= 0) {
                 disconnect_client(poll_fds, clients, active_clients, ready, i);
@@ -638,7 +618,6 @@ void send_busy(int socket_fd, bool* is_place_occupied, Logs& logs, std::string f
     
     message += "\r\n";
     
-    // std::cout << "sending " << message << "to client\n";
     ssize_t written_bytes = writen(socket_fd, message.c_str(), message.length());
     if (written_bytes <= 0) {
         throw std::runtime_error("writen (busy)");
@@ -817,7 +796,6 @@ void handle_new_client_request(int* active_clients, struct pollfd* poll_fds, str
     if (*active_clients < PLAYERS) {
         accept_client(poll_fds, clients);
         (*active_clients)++;
-        // std::cout << "Client " << *active_clients << " accepted\n"; // test
     } else {
         struct sockaddr_storage client_address;
         socklen_t len;
@@ -852,14 +830,19 @@ void handle_pollin(struct pollfd* poll_fds, int i, struct ClientInfo* clients,
         std::cerr << "empty readn: ending connection (id: " << i << ")\n";
     } else {
         logs.add(clients[i].ip_and_port, from, Clock::now(), buffer);
-        // std::cout << "received " << received_bytes << " bytes within connection (id: " << i << ")\n";
-        // std::cout << "parsing message: " << buffer << "\n";
         char place;
         if (parse_iam(buffer, &place) == 0) {
-            // std::cout << "received IAM" << place << "\n";
+            for (int s = 0; s < 5; s++) {
+                is_place_occupied[s] = false;
+            }
             get_occupied_places(clients, is_place_occupied);
             int p = map_place[place];
-            if (!is_place_occupied[p]) {
+            // Disconnect a client that tried to send another IAM:
+            if (clients[i].chosen_position != 0) {
+                std::cerr << "another IAM from client " << i << ", disconnecting\n";
+                disconnect_client(poll_fds, clients, active_clients, ready, i);
+            }
+            else if (!is_place_occupied[p]) {
                 clients[i].chosen_position = p;
                 (*ready)++;
             } else {
@@ -910,7 +893,6 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
             if (poll_fds[0].revents & POLLIN) {
 
                 handle_new_client_request(&active_clients, poll_fds, clients, logs, from);
-                // std::cout << "active_clients after connection: " << active_clients << "\n";
 
             }
             // Serve connected clients - receive IAM or reject message/connection.
@@ -938,9 +920,6 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
                     std::cerr << "error in poll_fds array: descriptor " << i << "is wrong\n";
                 }
             }
-        } 
-        else {
-            // std::cerr << "timeout...\n";
         }
 
         calculate_remaining_time(poll_fds, clients, timeout, &poll_timeout, &active_clients, &ready);
@@ -956,13 +935,6 @@ void connect_with_players(struct pollfd* ready_poll_fds, struct ClientInfo* read
         ready_clients[p].connection_time = clients[i].connection_time;
         ready_clients[p].chosen_position = clients[i].chosen_position;
     }
-
-    // test
-    // print_poll_fds(ready_poll_fds);
-    // print_clients(ready_clients);
-    // test
-
-    // std::cout << "Connections established, game is starting...\n";
 }
 
 
@@ -990,7 +962,6 @@ void accept_client_in_game(struct pollfd* poll_fds, struct ClientInfo* clients) 
             poll_fds[id].fd = client_fd;
             poll_fds[id].events = POLLIN;
             poll_fds[id].revents = 0;
-            // std::cout << "received new connection (id: " << id << "): " << client_ip_and_port << "\n";
             break;
         }
         id++;
@@ -1030,7 +1001,6 @@ void handle_new_client_request_in_game(int active_clients, struct pollfd* poll_f
                                        struct ClientInfo* clients, Logs& logs, std::string from) {
     if (active_clients < PLAYERS) {
         accept_client_in_game(poll_fds, clients);
-        // std::cout << "Client accepted\n"; // test
     } else {
         struct sockaddr_storage client_address;
         socklen_t len;
@@ -1141,7 +1111,6 @@ int calculate_trick_time_left(int timeout, TimePoint last_send_time, bool* trick
     int result = TIMEOUT;
     auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - last_send_time).count();
     int time_left = timeout - elapsed_time;
-    // std::cout << "time left for client to send TRICK: " << time_left << "\n";
 
     if (time_left <= 0) {
         *trick_to_send = true;
@@ -1162,7 +1131,6 @@ int calculate_iam_time_left(int timeout, struct pollfd* poll_fds, struct ClientI
             // Client hasn't sent IAM, so calculate time left:
             auto elapsed_time = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - clients[k].connection_time).count();
             int time_left = timeout - elapsed_time;
-            // std::cout << "time left for client to send IAM: " << time_left << "\n";
 
             if (time_left <= 0) {
                 int dummy1 = 0;
@@ -1230,7 +1198,6 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
         
         // Start the round.
         broadcast_deal(clients, type, round.starting_player, round.card_strings, deals_sent, logs, server_ip_and_port);
-        // std::cout << "sent deal to each client\n";
 
         // Play 13 tricks.
         for (int l = 1; l <= TRICKS_IN_ROUND; l++) {        // l - trick number.
@@ -1292,11 +1259,8 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                                 } else {
                                     // We expect TRICK.
                                     logs.add(clients[j].ip_and_port, server_ip_and_port, Clock::now(), buffer);
-                                    // std::cout << "received " << received_bytes << " bytes within connection (id: " << j << ")\n";
 
                                     if (active_clients == PLAYERS) {
-
-                                        // std::cout << "parsing message: " << buffer << "\n"; // test
 
                                         if (player == j) {
                                             // Got the message from the expected player.
@@ -1371,16 +1335,16 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                                                 disconnect_client_in_game(poll_fds, clients, &active_clients, j);
                                             }
                                         } else {
-                                            // Zły gracz wysyła wiadomość nieproszony - sprawdzamy czy wysłał TRICK
+                                            // Wrong player sends message - check if it's TRICK:
                                             std::string value;
                                             char suit;
                                             int errcode = parse_trick(buffer, l, &value, &suit);
                                             if (errcode == GOOD || errcode == 2) {
-                                                // Parsuje się, odsyłamy WRONG
+                                                // It is - send wrong:
                                                 std::cerr << "TRICK received from incorrect player\n";
                                                 send_wrong(poll_fds[j].fd, l, logs, server_ip_and_port, clients[j].ip_and_port);
                                             } else {
-                                                // Nie parsuje się - błędny komunikat
+                                                // Incorrect message in a wrong moment - disconnect:
                                                 std::cerr << "Unexpected message from player " << map_int_to_place_name[j] << " disconnected\n";
                                                 disconnect_client_in_game(poll_fds, clients, &active_clients, j);
                                             }
@@ -1419,10 +1383,6 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                                 } else {
                                     // We expect IAM:
                                     logs.add(clients[j].ip_and_port, server_ip_and_port, Clock::now(), buffer);
-                                    // test
-                                    // std::cout << "received " << received_bytes << " bytes within connection (id: " << j << ")\n";
-                                    // std::cout << "parsing message: " << buffer << "\n";
-                                    // test
                                     char place;
                                     if (parse_iam(buffer, &place) == GOOD) {
                                         handle_iam_in_game(poll_fds, clients, logs, place, &active_clients, j, server_ip_and_port, takens_sent, deals_sent);
@@ -1439,9 +1399,6 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
                                 check_poll_flags_new_client(poll_fds, clients, j);
                             }
                         }
-                    } 
-                    else {
-                        std::cerr << "timeout...\n";
                     }
 
                     // If we are in game, calculate time left to send TRICK.
@@ -1467,10 +1424,6 @@ void game_manager(Game game, struct pollfd* poll_fds, struct ClientInfo* clients
             // The winner starts the next trick:
             player = winner;
         }
-
-        // test
-        print_poll_fds(poll_fds);
-        print_clients(clients);
 
         // Send SCORE and TOTAL to all players after the round.
         broadcast_score(clients, logs, server_ip_and_port);
@@ -1517,7 +1470,6 @@ int main(int argc, char** argv) {
     
     try {
         parse_arguments(argc, argv, &port_s, &filename, &timeout);
-        // print_options_info(port_s, filename, timeout); // test
         game = parse_game_file(filename);
         initialize_main_socket(&socket_fd, port_s, &port, &server_address, &ip_and_port);
         initialize_descriptors(poll_fds, socket_fd);
